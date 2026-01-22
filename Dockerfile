@@ -20,4 +20,5 @@ ENV CSS_CONFIG=config/file.json
 ENV CSS_ROOT_FILE_PATH=/data
 
 # Run Solid Community Server (file mode)
-CMD ["node", "bin/server.js"]
+CMD ["node", "bin/server.js", "--baseUrl", "${BASE_URL}"]
+
