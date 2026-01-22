@@ -1,7 +1,7 @@
 import type {
   HttpHandler,
+  HttpHandlerInput,
   HttpRequest,
-  HttpResponse,
 } from '@solid/community-server';
 
 export class AuditAutologger implements HttpHandler {
@@ -11,7 +11,9 @@ export class AuditAutologger implements HttpHandler {
     this.logBasePath = logBasePath;
   }
 
-  public async handle(request: HttpRequest): Promise<HttpResponse> {
+  public async handle(input: HttpHandlerInput): Promise<void> {
+    const request = input.request as HttpRequest;
+
     const webId =
       request.headers.authorization ??
       request.headers['solid-webid'] ??
@@ -25,7 +27,7 @@ export class AuditAutologger implements HttpHandler {
       time: new Date().toISOString(),
     });
 
-    // ⚠️ WAJIB lanjutkan pipeline
-    return request.next();
+    // ✅ lanjutkan pipeline dengan BENAR
+    await input.next();
   }
 }
