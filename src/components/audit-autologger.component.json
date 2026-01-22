@@ -1,11 +1,18 @@
 {
   "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
 
-  "@id": "urn:solid:AuditAutologgerClass",
+  "@id": "urn:solid:audit-autologger",
 
-  "@type": "Class",
+  "@type": "HttpMiddleware",
 
-  "components:className": "AuditAutologger",
+  "http:name": "audit-autologger",
+  "http:priority": 50,
 
-  "components:modulePath": "../../../dist/audit/solid-audit-autologger.js"
+  "http:handle": {
+    "@type": "AuditAutologger",
+    "require": "file:dist/audit/solid-audit-autologger.js",
+    "arguments": {
+      "logBasePath": "private/audit/access"
+    }
+  }
 }
