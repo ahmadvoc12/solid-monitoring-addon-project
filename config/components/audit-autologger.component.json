@@ -1,0 +1,13 @@
+{
+  "@context": {
+    "components": "https://linkedsoftwaredependencies.org/vocab/components#"
+  },
+
+  "@id": "urn:solid:AuditAutologgerClass",
+
+  "@type": "components:Class",
+
+  "components:className": "AuditAutologger",
+
+  "components:modulePath": "../../../dist/audit/solid-audit-autologger.js"
+}

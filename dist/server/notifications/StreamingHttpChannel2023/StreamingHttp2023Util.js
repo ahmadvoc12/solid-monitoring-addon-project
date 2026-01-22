@@ -1,0 +1,19 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.generateChannel = void 0;
+const Vocabularies_1 = require("../../../util/Vocabularies");
+/**
+ * Default StreamingHTTPChanel2023 for a topic.
+ * Currently channel description is only used internally and never sent to the client.
+ * The default channel uses Turtle.
+ */
+function generateChannel(topic) {
+    return {
+        id: `${topic.path}.channel`,
+        type: Vocabularies_1.NOTIFY.StreamingHTTPChannel2023,
+        topic: topic.path,
+        accept: 'text/turtle',
+    };
+}
+exports.generateChannel = generateChannel;
+//# sourceMappingURL=StreamingHttp2023Util.js.map

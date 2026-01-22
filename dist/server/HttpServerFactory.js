@@ -1,0 +1,12 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.isHttpsServer = void 0;
+const node_https_1 = require("node:https");
+/**
+ * Returns `true` if the server is an HTTPS server.
+ */
+function isHttpsServer(server) {
+    return server instanceof node_https_1.Server;
+}
+exports.isHttpsServer = isHttpsServer;
+//# sourceMappingURL=HttpServerFactory.js.map

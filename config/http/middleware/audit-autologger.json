@@ -1,0 +1,25 @@
+{
+  "@context": {
+    "http": "https://www.w3.org/ns/solid/http#",
+    "components": "https://linkedsoftwaredependencies.org/vocab/components#"
+  },
+
+  "@id": "urn:solid:audit-autologger-middleware",
+
+  "@type": "http:HttpMiddleware",
+
+  "http:name": "audit-autologger",
+  "http:priority": 50,
+
+  "http:handle": {
+    "@type": "AuditAutologger",
+
+    "components:parameters": [
+      {
+        "@type": "components:Parameter",
+        "components:key": "logBasePath",
+        "components:value": "private/audit/access"
+      }
+    ]
+  }
+}

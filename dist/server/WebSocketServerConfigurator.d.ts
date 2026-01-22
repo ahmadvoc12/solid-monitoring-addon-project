@@ -1,0 +1,15 @@
+/// <reference types="node" />
+import type { Server } from 'node:http';
+import { ServerConfigurator } from './ServerConfigurator';
+import type { WebSocketHandler } from './WebSocketHandler';
+/**
+ * {@link ServerConfigurator} that adds WebSocket functionality to an existing {@link Server}.
+ *
+ * Listens for WebSocket requests and sends them to its handler.
+ */
+export declare class WebSocketServerConfigurator extends ServerConfigurator {
+    protected readonly logger: import("../index").Logger;
+    private readonly handler;
+    constructor(handler: WebSocketHandler);
+    handle(server: Server): Promise<void>;
+}

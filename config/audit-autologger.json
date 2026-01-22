@@ -1,0 +1,10 @@
+{
+  "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+  "@graph": [
+    {
+      "@id": "urn:solid:AuditAutoLogger",
+      "@type": "HttpHandler",
+      "require": "../../../dist/audit/solid-audit-autologger.js"
+    }
+  ]
+}

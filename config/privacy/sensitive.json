@@ -1,0 +1,19 @@
+{
+  "rules": {
+    "nik": {
+      "sensitive": true,
+      "explicitConsentRequired": true,
+      "riskLevel": "HIGH",
+      "legalBasis": "ExplicitConsent",
+      "violationIfAccessedWithoutConsent": true
+    },
+
+    "bloodType": {
+      "sensitive": true,
+      "explicitConsentRequired": true,
+      "riskLevel": "HIGH",
+      "legalBasis": "ExplicitConsent",
+      "violationIfAccessedWithoutConsent": true
+    }
+  }
+}

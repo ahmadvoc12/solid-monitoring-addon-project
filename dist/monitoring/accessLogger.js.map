@@ -1,0 +1,1 @@
+{"version":3,"file":"accessLogger.js","sourceRoot":"","sources":["../../src/monitoring/accessLogger.ts"],"names":[],"mappings":";;;AAAA,SAAgB,SAAS,CAAC,KAAK;IAC7B,eAAe;AACjB,CAAC;AAFD,8BAEC","sourcesContent":["export function logAccess(event) {\n  // tulis ke RDF\n}\n"]}

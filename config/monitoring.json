@@ -1,0 +1,5 @@
+{
+  "default": false,
+  "logFormat": "rdf",
+  "vocabulary": "dpv"
+}

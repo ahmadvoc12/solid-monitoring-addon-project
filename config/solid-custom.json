@@ -1,0 +1,8 @@
+{
+  "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld",
+  "@id": "urn:solid-server:default",
+  "@type": "Server",
+  "import": [
+    "css:config/file.json"
+  ]
+}

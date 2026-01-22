@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Consent</title>
+
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2em; }
+    h1 { margin-bottom: .5em; }
+    .error { color: red; margin-bottom: 1em; }
+    dl { margin-left: 1em; }
+    dt { font-weight: bold; }
+    .checkbox, .radio { margin: .5em 0; }
+    .actions button { margin-right: .5em; }
+    .alternate { background: #f0f0f0; }
+    pre {
+      font-size: 13px;
+      background: #0b0b0b;
+      color: #00ff9c;
+      padding: 1em;
+      border-radius: 6px;
+      max-height: 300px;
+      overflow: auto;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>An application is requesting access</h1>
+<p class="error" id="error"></p>
+
+<dl id="clientInfo"></dl>
+
+<form id="mainForm">
+
+  <fieldset>
+    <legend>Choose your WebID</legend>
+    <ol id="webIdList"></ol>
+  </fieldset>
+
+  <fieldset>
+    <ol>
+      <li class="checkbox">
+        <label>
+          <input type="checkbox" checked disabled>
+          Remember this client
+        </label>
+      </li>
+
+      <li class="checkbox">
+        <label>
+          <input type="checkbox" id="monitorToggle">
+          Enable data access monitoring
+        </label>
+      </li>
+    </ol>
+  </fieldset>
+
+  <p class="actions">
+    <button id="authorize" type="submit" disabled>Authorize</button>
+  </p>
+</form>
+
+<!-- ================= MODAL ================= -->
+
+<div id="agreementModal"
+     style="display:none; position:fixed; inset:0;
+            background:rgba(0,0,0,.5); z-index:9999;
+            align-items:center; justify-content:center;">
+
+  <div style="background:#fff; padding:2em; max-width:700px; width:100%; border-radius:8px;">
+    <h2>Data Access Agreement</h2>
+
+    <p><strong>Detected Personal Data</strong></p>
+    <ul id="dpvList"></ul>
+
+    <p>
+      <strong>Monitoring:</strong>
+      <span id="monitorStatus"></span>
+    </p>
+
+    <details>
+      <summary>dpv:Consent JSON-LD</summary>
+      <pre id="preview"></pre>
+    </details>
+
+    <div style="margin-top:1em; text-align:right;">
+      <button id="agreeCancel" class="alternate">Cancel</button>
+      <button id="agreeConfirm">I Agree & Continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ================= GLOBAL ================= */
+
+let oidcControls = null;
+let consentClient = null;
+let dpvData = [];
+let pendingAgreement = null;
+
+/* ================= HELPERS ================= */
+
+function qs(id) {
+  return document.getElementById(id);
+}
+
+async function loadDPV(webId) {
+  const podRoot = webId.replace(/\/profile\/card#me$/, "/");
+  try {
+    const res = await fetch(podRoot + "private/dpv-mapping.ttl", {
+      headers: { Accept: "text/turtle" }
+    });
+    if (!res.ok) return [];
+
+    const ttl = await res.text();
+    return [...ttl.matchAll(
+      /skos:prefLabel\s+"(.+?)"[\s\S]*?dpv:hasPersonalDataCategory\s+([^\s;]+)/g
+    )].map(m => ({
+      label: m[1],
+      category: m[2]
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/* ================= INIT ================= */
+
+(async () => {
+  oidcControls = await fetchControls('<%= idpIndex %>');
+
+  const { webIds } = await fetchJson(oidcControls.oidc.webId);
+  qs('authorize').disabled = false;
+
+  webIds.forEach((id, i) => {
+    qs('webIdList').insertAdjacentHTML(
+      'beforeend',
+      `<li class="radio">
+        <label>
+          <input type="radio" name="webId" value="${id}" ${i === 0 ? 'checked' : ''}>
+          ${id}
+        </label>
+      </li>`
+    );
+  });
+
+  const consent = await fetchJson(oidcControls.oidc.consent);
+  consentClient = consent.client;
+
+  qs('clientInfo').innerHTML = `
+    <dt>Name</dt><dd>${consentClient.client_name}</dd>
+    <dt>Client ID</dt><dd>${consentClient.client_id}</dd>
+  `;
+
+  qs('mainForm').addEventListener('submit', handleAuthorize);
+})();
+
+/* ================= CORE FLOW ================= */
+
+async function handleAuthorize(e) {
+  e.preventDefault();
+
+  const webId = new FormData(qs('mainForm')).get('webId');
+  const monitoring = qs('monitorToggle').checked;
+
+  /* STEP 1: register WebID */
+  const r = await postJson(oidcControls.oidc.webId, { webId });
+  const j = await r.json();
+  if (!r.ok) {
+    qs('error').textContent = j.message || 'Failed to select WebID';
+    return;
+  }
+  await fetch(j.location);
+
+  /* STEP 2: load DPV */
+  dpvData = await loadDPV(webId);
+
+  /* STEP 3: build agreement */
+  pendingAgreement = {
+    webId,
+    client: consentClient.client_id,
+    personalData: dpvData,
+    monitoring,
+    created: new Date().toISOString()
+  };
+
+  /* STEP 4: render modal */
+  qs('dpvList').innerHTML = dpvData.length
+    ? dpvData.map(d => `<li>${d.label} ⚠️ sensitive</li>`).join('')
+    : '<li>No personal data detected</li>';
+
+  qs('monitorStatus').textContent = monitoring ? 'Enabled' : 'Disabled';
+  qs('preview').textContent = JSON.stringify(pendingAgreement, null, 2);
+
+  qs('agreementModal').style.display = 'flex';
+}
+
+/* ================= MODAL ACTIONS ================= */
+
+qs('agreeCancel').onclick = () => {
+  qs('agreementModal').style.display = 'none';
+};
+
+qs('agreeConfirm').onclick = async () => {
+  // 🔑 trigger autologger
+  sessionStorage.setItem(
+    'solidPendingConsent',
+    JSON.stringify(pendingAgreement)
+  );
+
+  const r = await postJson(oidcControls.oidc.consent, { remember: true });
+  const j = await r.json();
+  location.href = j.location; // ➜ redirect to APP
+};
+</script>
+
+</body>
+</html>
