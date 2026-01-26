@@ -7,8 +7,8 @@ import { spawn } from "child_process";
 /* ===============================
    CONFIG (RAILWAY SAFE)
 ================================ */
-const GATEWAY_PORT = process.env.PORT || 3000; // Railway PUBLIC
-const CSS_PORT = 3001;                         // INTERNAL ONLY
+const GATEWAY_PORT = process.env.PORT || 3000; // PUBLIC (Railway)
+const CSS_PORT = 3001;                         // INTERNAL
 const BASE_URL = process.env.BASE_URL;         // REQUIRED
 
 if (!BASE_URL) {
@@ -21,7 +21,7 @@ const AUDIT_SUBPATH = "private/audit/access";
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /* ===============================
-   START SOLID CSS (STRICT INTERNAL)
+   START SOLID CSS (INTERNAL)
 ================================ */
 spawn(
   "node",
@@ -30,10 +30,7 @@ spawn(
     "-c", "config/file.json",
     "-f", "./.data",
     "-p", String(CSS_PORT),
-
-    // 🔥 CRITICAL: Solid identity correctness
-    "--baseUrl", BASE_URL,
-    "--hostname", "127.0.0.1"
+    "--baseUrl", BASE_URL
   ],
   { stdio: "inherit" }
 );
@@ -151,7 +148,7 @@ ex:${id}
 }
 
 /* ===============================
-   GATEWAY SERVER (ONLY PUBLIC)
+   GATEWAY SERVER (PUBLIC)
 ================================ */
 http.createServer(async (req, res) => {
   const { method, url, headers } = req;
