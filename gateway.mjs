@@ -7,8 +7,14 @@ import { spawn } from "child_process";
 /* ===============================
    CONFIG (RAILWAY SAFE)
 ================================ */
-const GATEWAY_PORT = process.env.PORT || 3001; // Railway injects PORT
-const CSS_PORT = process.env.CSS_PORT || 3000;
+const GATEWAY_PORT = process.env.PORT || 3001;      // Railway injects PORT
+const CSS_PORT = process.env.CSS_PORT || 3000;      // internal
+const BASE_URL = process.env.BASE_URL;              // REQUIRED
+
+if (!BASE_URL) {
+  console.error("❌ BASE_URL env is required (Railway public URL)");
+  process.exit(1);
+}
 
 const DATA_ROOT = path.resolve(".data");
 const AUDIT_SUBPATH = "private/audit/access";
@@ -16,7 +22,7 @@ const AUDIT_SUBPATH = "private/audit/access";
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /* ===============================
-   START SOLID CSS
+   START SOLID CSS (INTERNAL)
 ================================ */
 spawn(
   "node",
@@ -29,7 +35,7 @@ spawn(
     "-p",
     String(CSS_PORT),
     "--baseUrl",
-    `http://localhost:${GATEWAY_PORT}`
+    BASE_URL
   ],
   { stdio: "inherit" }
 );
@@ -121,6 +127,7 @@ async function writeAudit({ pod, method, pathname, headers, resourceBody }) {
   const controller =
     headers.origin ||
     headers.referer ||
+    headers["user-agent"] ||
     "urn:unknown:app";
 
   const processing =
@@ -154,7 +161,7 @@ ex:${id}
 }
 
 /* ===============================
-   GATEWAY SERVER
+   GATEWAY SERVER (PUBLIC)
 ================================ */
 http
   .createServer(async (req, res) => {
@@ -183,7 +190,9 @@ http
         method,
         headers: {
           ...headers,
-          host: `localhost:${GATEWAY_PORT}`
+          host: new URL(BASE_URL).host,   // 🔥 CRITICAL FIX
+          "x-forwarded-host": new URL(BASE_URL).host,
+          "x-forwarded-proto": "https"
         }
       },
       async proxyRes => {
@@ -209,6 +218,7 @@ http
     proxyReq.end();
   })
   .listen(GATEWAY_PORT, () => {
-    console.log(`✅ Solid Gateway @ http://localhost:${GATEWAY_PORT}`);
-    console.log(`🔁 Solid CSS Internal @ http://localhost:${CSS_PORT}`);
+    console.log(`✅ Solid Gateway listening on :${GATEWAY_PORT}`);
+    console.log(`🌍 BASE_URL = ${BASE_URL}`);
+    console.log(`🔁 CSS internal on :${CSS_PORT}`);
   });
