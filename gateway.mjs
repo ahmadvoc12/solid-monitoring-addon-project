@@ -5,11 +5,11 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   CONFIG (RAILWAY SAFE)
+   ENV & CONFIG
 ================================ */
-const GATEWAY_PORT = process.env.PORT || 3000; // PUBLIC (Railway)
-const CSS_PORT = 3001;                         // INTERNAL
-const BASE_URL = process.env.BASE_URL;         // REQUIRED
+const GATEWAY_PORT = Number(process.env.PORT || 8080); // Railway ONLY cares this
+const CSS_PORT = Number(process.env.CSS_PORT || 3001); // internal
+const BASE_URL = process.env.BASE_URL;                 // REQUIRED
 
 if (!BASE_URL) {
   console.error("❌ BASE_URL env is required");
@@ -27,10 +27,14 @@ spawn(
   "node",
   [
     "./bin/server.js",
-    "-c", "config/file.json",
-    "-f", "./.data",
-    "-p", String(CSS_PORT),
-    "--baseUrl", BASE_URL
+    "-c",
+    "config/file.json",
+    "-f",
+    "./.data",
+    "-p",
+    String(CSS_PORT),
+    "--baseUrl",
+    BASE_URL
   ],
   { stdio: "inherit" }
 );
@@ -116,6 +120,7 @@ async function writeAudit({ pod, method, pathname, headers, resourceBody }) {
   const controller =
     headers.origin ||
     headers.referer ||
+    headers["user-agent"] ||
     "urn:unknown:app";
 
   const processing = method === "GET" ? "dpv:Access" : "dpv:Create";
@@ -150,64 +155,68 @@ ex:${id}
 /* ===============================
    GATEWAY SERVER (PUBLIC)
 ================================ */
-http.createServer(async (req, res) => {
-  const { method, url, headers } = req;
+http
+  .createServer(async (req, res) => {
 
-  if (method === "OPTIONS") {
-    res.writeHead(204);
-    return res.end();
-  }
-
-  const targetUrl = new URL(url, `http://127.0.0.1:${CSS_PORT}`);
-  const pathname = targetUrl.pathname;
-
-  console.log("➡️ GATEWAY HIT:", method, pathname);
-
-  const pod = detectPod(pathname);
-
-  let requestBody = "";
-  for await (const chunk of req) requestBody += chunk.toString();
-
-  const proxyReq = http.request(
-    {
-      hostname: "127.0.0.1",
-      port: CSS_PORT,
-      path: url,
-      method,
-      headers: {
-        ...headers,
-
-        // 🔥 Solid-compliant forwarding
-        host: new URL(BASE_URL).host,
-        Forwarded: `proto=https;host=${new URL(BASE_URL).host}`,
-        "x-forwarded-proto": "https",
-        "x-forwarded-host": new URL(BASE_URL).host
-      }
-    },
-    async proxyRes => {
-      let responseBody = "";
-      for await (const chunk of proxyRes) responseBody += chunk.toString();
-
-      if (AUDIT_METHODS.includes(method)) {
-        await writeAudit({
-          pod,
-          method,
-          pathname,
-          headers,
-          resourceBody: method === "GET" ? responseBody : requestBody
-        }).catch(console.error);
-      }
-
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
-      res.end(responseBody);
+    // 🔥 Railway health check
+    if (req.url === "/" || req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      return res.end("Solid Gateway OK");
     }
-  );
 
-  if (requestBody) proxyReq.write(requestBody);
-  proxyReq.end();
-})
-.listen(GATEWAY_PORT, () => {
-  console.log(`✅ Solid Gateway PUBLIC :${GATEWAY_PORT}`);
-  console.log(`🌍 BASE_URL = ${BASE_URL}`);
-  console.log(`🔒 CSS INTERNAL :${CSS_PORT}`);
-});
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      return res.end();
+    }
+
+    const { method, url, headers } = req;
+    const targetUrl = new URL(url, `http://localhost:${CSS_PORT}`);
+    const pathname = targetUrl.pathname;
+
+    console.log("➡️ GATEWAY HIT:", method, pathname);
+
+    const pod = detectPod(pathname);
+
+    let requestBody = "";
+    for await (const chunk of req) requestBody += chunk.toString();
+
+    const proxyReq = http.request(
+      {
+        hostname: "localhost",
+        port: CSS_PORT,
+        path: url,
+        method,
+        headers: {
+          ...headers,
+          host: new URL(BASE_URL).host,
+          "x-forwarded-host": new URL(BASE_URL).host,
+          "x-forwarded-proto": "https"
+        }
+      },
+      async proxyRes => {
+        let responseBody = "";
+        for await (const chunk of proxyRes) responseBody += chunk.toString();
+
+        if (AUDIT_METHODS.includes(method)) {
+          await writeAudit({
+            pod,
+            method,
+            pathname,
+            headers,
+            resourceBody: method === "GET" ? responseBody : requestBody
+          }).catch(console.error);
+        }
+
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        res.end(responseBody);
+      }
+    );
+
+    if (requestBody) proxyReq.write(requestBody);
+    proxyReq.end();
+  })
+  .listen(GATEWAY_PORT, "0.0.0.0", () => {
+    console.log(`✅ Solid Gateway PUBLIC :${GATEWAY_PORT}`);
+    console.log(`🌍 BASE_URL = ${BASE_URL}`);
+    console.log(`🔒 CSS INTERNAL :${CSS_PORT}`);
+  });
