@@ -7,35 +7,33 @@ import { spawn } from "child_process";
 /* ===============================
    CONFIG (RAILWAY SAFE)
 ================================ */
-const GATEWAY_PORT = process.env.PORT || 3001;      // Railway injects PORT
-const CSS_PORT = process.env.CSS_PORT || 3000;      // internal
-const BASE_URL = process.env.BASE_URL;              // REQUIRED
+const GATEWAY_PORT = process.env.PORT || 3000; // Railway PUBLIC
+const CSS_PORT = 3001;                         // INTERNAL ONLY
+const BASE_URL = process.env.BASE_URL;         // REQUIRED
 
 if (!BASE_URL) {
-  console.error("❌ BASE_URL env is required (Railway public URL)");
+  console.error("❌ BASE_URL env is required");
   process.exit(1);
 }
 
 const DATA_ROOT = path.resolve(".data");
 const AUDIT_SUBPATH = "private/audit/access";
-
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /* ===============================
-   START SOLID CSS (INTERNAL)
+   START SOLID CSS (STRICT INTERNAL)
 ================================ */
 spawn(
   "node",
   [
     "./bin/server.js",
-    "-c",
-    "config/file.json",
-    "-f",
-    "./.data",
-    "-p",
-    String(CSS_PORT),
-    "--baseUrl",
-    BASE_URL
+    "-c", "config/file.json",
+    "-f", "./.data",
+    "-p", String(CSS_PORT),
+
+    // 🔥 CRITICAL: Solid identity correctness
+    "--baseUrl", BASE_URL,
+    "--hostname", "127.0.0.1"
   ],
   { stdio: "inherit" }
 );
@@ -66,7 +64,7 @@ async function ensureAuditLog(pod) {
   } catch {
     await fs.writeFile(
       file,
-      `@prefix dpv: <https://www.w3.org/ns/dpv#> .
+`@prefix dpv: <https://www.w3.org/ns/dpv#> .
 @prefix dpv-pd: <https://www.w3.org/ns/dpv/pd#> .
 @prefix dct: <http://purl.org/dc/terms/> .
 @prefix ex: <https://example.org/solid/audit#> .
@@ -81,27 +79,21 @@ async function ensureAuditLog(pod) {
 }
 
 /* ===============================
-   SENSITIVE DETECTION (TTL BASED)
+   SENSITIVE DETECTION
 ================================ */
 function detectSensitiveFromTtl(ttl) {
   if (!ttl || typeof ttl !== "string") return null;
 
   const found = [];
 
-  if (
-    ttl.includes("dpv#hasPersonalData") &&
-    ttl.includes("dpv/pd#NationalIdentificationNumber")
-  ) {
+  if (ttl.includes("dpv/pd#NationalIdentificationNumber")) {
     found.push({
       iri: "<https://www.w3.org/ns/dpv/pd#NationalIdentificationNumber>",
       category: "dpv:HighlySensitivePersonalData"
     });
   }
 
-  if (
-    ttl.includes("dpv#hasPersonalData") &&
-    ttl.includes("dpv/pd#BloodType")
-  ) {
+  if (ttl.includes("dpv/pd#BloodType")) {
     found.push({
       iri: "<https://www.w3.org/ns/dpv/pd#BloodType>",
       category: "dpv:SpecialCategoryPersonalData"
@@ -116,7 +108,7 @@ function detectSensitiveFromTtl(ttl) {
 ================================ */
 async function writeAudit({ pod, method, pathname, headers, resourceBody }) {
   if (!pod) return;
-  if (isAuditResource(pathname)) return; // 🔥 STOP LOOP
+  if (isAuditResource(pathname)) return;
 
   const sensitive = detectSensitiveFromTtl(resourceBody);
   const logFile = await ensureAuditLog(pod);
@@ -127,11 +119,9 @@ async function writeAudit({ pod, method, pathname, headers, resourceBody }) {
   const controller =
     headers.origin ||
     headers.referer ||
-    headers["user-agent"] ||
     "urn:unknown:app";
 
-  const processing =
-    method === "GET" ? "dpv:Access" : "dpv:Create";
+  const processing = method === "GET" ? "dpv:Access" : "dpv:Create";
 
   let ttl = `
 ex:${id}
@@ -161,64 +151,66 @@ ex:${id}
 }
 
 /* ===============================
-   GATEWAY SERVER (PUBLIC)
+   GATEWAY SERVER (ONLY PUBLIC)
 ================================ */
-http
-  .createServer(async (req, res) => {
-    const { method, url, headers } = req;
+http.createServer(async (req, res) => {
+  const { method, url, headers } = req;
 
-    if (method === "OPTIONS") {
-      res.writeHead(204);
-      return res.end();
-    }
+  if (method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
 
-    const targetUrl = new URL(url, `http://localhost:${CSS_PORT}`);
-    const pathname = targetUrl.pathname;
+  const targetUrl = new URL(url, `http://127.0.0.1:${CSS_PORT}`);
+  const pathname = targetUrl.pathname;
 
-    console.log("➡️ GATEWAY HIT:", method, pathname);
+  console.log("➡️ GATEWAY HIT:", method, pathname);
 
-    const pod = detectPod(pathname);
+  const pod = detectPod(pathname);
 
-    let requestBody = "";
-    for await (const chunk of req) requestBody += chunk.toString();
+  let requestBody = "";
+  for await (const chunk of req) requestBody += chunk.toString();
 
-    const proxyReq = http.request(
-      {
-        hostname: "localhost",
-        port: CSS_PORT,
-        path: url,
-        method,
-        headers: {
-          ...headers,
-          host: new URL(BASE_URL).host,   // 🔥 CRITICAL FIX
-          "x-forwarded-host": new URL(BASE_URL).host,
-          "x-forwarded-proto": "https"
-        }
-      },
-      async proxyRes => {
-        let responseBody = "";
-        for await (const chunk of proxyRes) responseBody += chunk.toString();
+  const proxyReq = http.request(
+    {
+      hostname: "127.0.0.1",
+      port: CSS_PORT,
+      path: url,
+      method,
+      headers: {
+        ...headers,
 
-        if (AUDIT_METHODS.includes(method)) {
-          await writeAudit({
-            pod,
-            method,
-            pathname,
-            headers,
-            resourceBody: method === "GET" ? responseBody : requestBody
-          }).catch(console.error);
-        }
-
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        res.end(responseBody);
+        // 🔥 Solid-compliant forwarding
+        host: new URL(BASE_URL).host,
+        Forwarded: `proto=https;host=${new URL(BASE_URL).host}`,
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": new URL(BASE_URL).host
       }
-    );
+    },
+    async proxyRes => {
+      let responseBody = "";
+      for await (const chunk of proxyRes) responseBody += chunk.toString();
 
-    if (requestBody) proxyReq.write(requestBody);
-    proxyReq.end();
-  })
-  .listen(GATEWAY_PORT, () => {
-    console.log(`✅ Solid Gateway listening on :${GATEWAY_PORT}`);
-    console.log(`🌍 BASE_URL = ${BASE_URL}`);
-    console.log(`🔁 CSS internal on :${CSS_PORT}`);
-  });
+      if (AUDIT_METHODS.includes(method)) {
+        await writeAudit({
+          pod,
+          method,
+          pathname,
+          headers,
+          resourceBody: method === "GET" ? responseBody : requestBody
+        }).catch(console.error);
+      }
+
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      res.end(responseBody);
+    }
+  );
+
+  if (requestBody) proxyReq.write(requestBody);
+  proxyReq.end();
+})
+.listen(GATEWAY_PORT, () => {
+  console.log(`✅ Solid Gateway PUBLIC :${GATEWAY_PORT}`);
+  console.log(`🌍 BASE_URL = ${BASE_URL}`);
+  console.log(`🔒 CSS INTERNAL :${CSS_PORT}`);
+});
