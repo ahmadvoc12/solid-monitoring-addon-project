@@ -5,13 +5,13 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   CONFIG
+   CONFIG (RAILWAY SAFE)
 ================================ */
-const GATEWAY_PORT = 3001;   // public
-const CSS_PORT = 3000;       // internal
+const GATEWAY_PORT = process.env.PORT || 3001; // Railway injects PORT
+const CSS_PORT = process.env.CSS_PORT || 3000;
 
 const DATA_ROOT = path.resolve(".data");
-const AUDIT_PATH = "private/audit/access";
+const AUDIT_SUBPATH = "private/audit/access";
 
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -42,8 +42,15 @@ function detectPod(pathname) {
   return seg.length ? seg[0] : null;
 }
 
+function isAuditResource(pathname) {
+  return pathname.includes("/private/audit/");
+}
+
+/* ===============================
+   ENSURE AUDIT LOG
+================================ */
 async function ensureAuditLog(pod) {
-  const dir = path.join(DATA_ROOT, pod, AUDIT_PATH);
+  const dir = path.join(DATA_ROOT, pod, AUDIT_SUBPATH);
   const file = path.join(dir, "log.ttl");
 
   await fs.mkdir(dir, { recursive: true });
@@ -53,8 +60,7 @@ async function ensureAuditLog(pod) {
   } catch {
     await fs.writeFile(
       file,
-      `
-@prefix dpv: <https://www.w3.org/ns/dpv#> .
+      `@prefix dpv: <https://www.w3.org/ns/dpv#> .
 @prefix dpv-pd: <https://www.w3.org/ns/dpv/pd#> .
 @prefix dct: <http://purl.org/dc/terms/> .
 @prefix ex: <https://example.org/solid/audit#> .
@@ -69,10 +75,10 @@ async function ensureAuditLog(pod) {
 }
 
 /* ===============================
-   SENSITIVE DETECTION (CORE FIX)
+   SENSITIVE DETECTION (TTL BASED)
 ================================ */
 function detectSensitiveFromTtl(ttl) {
-  if (!ttl) return null;
+  if (!ttl || typeof ttl !== "string") return null;
 
   const found = [];
 
@@ -103,10 +109,8 @@ function detectSensitiveFromTtl(ttl) {
    AUDIT WRITER
 ================================ */
 async function writeAudit({ pod, method, pathname, headers, resourceBody }) {
-  if (!pod) {
-    console.warn("⚠️ POD not detected → skip audit");
-    return;
-  }
+  if (!pod) return;
+  if (isAuditResource(pathname)) return; // 🔥 STOP LOOP
 
   const sensitive = detectSensitiveFromTtl(resourceBody);
   const logFile = await ensureAuditLog(pod);
@@ -155,13 +159,19 @@ ex:${id}
 http
   .createServer(async (req, res) => {
     const { method, url, headers } = req;
+
+    if (method === "OPTIONS") {
+      res.writeHead(204);
+      return res.end();
+    }
+
     const targetUrl = new URL(url, `http://localhost:${CSS_PORT}`);
+    const pathname = targetUrl.pathname;
 
-    console.log("➡️ GATEWAY HIT:", method, targetUrl.pathname);
+    console.log("➡️ GATEWAY HIT:", method, pathname);
 
-    const pod = detectPod(targetUrl.pathname);
+    const pod = detectPod(pathname);
 
-    // Capture request body (PUT/POST)
     let requestBody = "";
     for await (const chunk of req) requestBody += chunk.toString();
 
@@ -180,15 +190,13 @@ http
         let responseBody = "";
         for await (const chunk of proxyRes) responseBody += chunk.toString();
 
-        // === AUDIT AFTER RESPONSE (IMPORTANT FIX) ===
         if (AUDIT_METHODS.includes(method)) {
           await writeAudit({
             pod,
             method,
-            pathname: targetUrl.pathname,
+            pathname,
             headers,
-            resourceBody:
-              method === "GET" ? responseBody : requestBody
+            resourceBody: method === "GET" ? responseBody : requestBody
           }).catch(console.error);
         }
 

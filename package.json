@@ -1,89 +1,29 @@
 {
   "name": "@solid/community-server",
   "version": "7.1.7",
-  "type": "module",
-
-  "description": "Community Solid Server: an open and modular implementation of the Solid specifications",
+  "description": "Community Solid Server with Gateway + Audit",
   "license": "MIT",
-  "homepage": "https://github.com/CommunitySolidServer/CommunitySolidServer#readme",
-  "repository": "git@github.com:CommunitySolidServer/CommunitySolidServer.git",
-  "bugs": {
-    "url": "https://github.com/CommunitySolidServer/CommunitySolidServer/issues"
-  },
-  "keywords": [
-    "solid",
-    "linked-data",
-    "rdf",
-    "ldp"
-  ],
+
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "bin": {
     "community-solid-server": "bin/server.js"
   },
-  "files": [
-    "bin",
-    "config",
-    "dist",
-    "templates"
-  ],
+
   "engines": {
     "node": ">=18.0"
   },
 
-  "lsd:module": "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server",
-  "lsd:components": "dist/components/components.jsonld",
-  "lsd:contexts": {
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/context.jsonld": "dist/components/context.jsonld"
-  },
-  "lsd:importPaths": {
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/components/": "dist/components/",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/config/": "config/",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/dist/": "dist/",
-    "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^7.0.0/templates/config/": "templates/config/"
-  },
-
   "scripts": {
-    "build": "npm run build:ts && npm run build:components",
-    "build:components": "componentsjs-generator -s src -c dist/components -r css -i .componentsignore",
-    "build:ts": "tsc",
-
-    "start:css": "node ./bin/server.js -c config/file.json -f ./.data",
-    "start:gateway": "node gateway.js",
+    "start:gateway": "node gateway.mjs",
     "start": "npm run start:gateway",
 
+    "start:css": "node ./bin/server.js -c config/file.json -f ./.data",
+
     "start:file": "node ./bin/server.js -c config/file.json -f ./.data",
-    "start:file-root": "node ./bin/server.js -c config/file-root.json -f ./.data",
-
-    "test": "npm run test:ts && npm run jest",
-    "test:ts": "tsc -p test --noEmit",
-
-    "lint": "npm run lint:eslint && npm run lint:markdown",
-    "lint:eslint": "eslint . --cache --max-warnings 0",
-    "lint:markdown": "markdownlint-cli2",
-
-    "watch": "nodemon --watch \"dist/**/*.js\" --exec npm start"
+    "start:file-root": "node ./bin/server.js -c config/file-root.json -f ./.data"
   },
 
   "dependencies": {
-    "@solid/community-server": "^7.1.7",
-    "cors": "^2.8.5",
-    "cookie": "^0.7.0",
-    "ejs": "^3.1.9",
-    "fs-extra": "^11.1.1",
-    "jose": "^4.15.2",
-    "mime-types": "^2.1.35",
-    "n3": "^1.26.0",
-    "node-fetch": "^2.7.0",
-    "oidc-provider": "^8.4.0",
-    "uuid": "^9.0.1",
-    "winston": "^3.11.0",
-    "ws": "^8.14.2"
-  },
-
-  "devDependencies": {
-    "typescript": "^4.4.4",
-    "ts-node": "^10.9.2",
-    "nodemon": "^3.0.1"
+    "@solid/community-server": "^7.1.7"
   }
 }
