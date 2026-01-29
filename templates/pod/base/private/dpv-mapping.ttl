@@ -1,18 +1,17 @@
-@prefix dpv:    <https://www.w3.org/ns/dpv#> .
-@prefix dpv-pd: <https://www.w3.org/ns/dpv/pd#> .
-@prefix skos:   <http://www.w3.org/2004/02/skos/core#> .
-@prefix ex:     <https://example.org/privacy#> .
+@prefix dpv:  <https://w3id.org/dpv#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix ex:   <https://example.org/privacy#> .
 
-ex:nik
+ex:identifier
   a dpv:PersonalData ;
-  skos:prefLabel "National Identification Number"@en ;
-  dpv:hasPersonalDataCategory dpv-pd:NationalIdentificationNumber ;
-  dpv:hasDataCategory dpv:HighlySensitivePersonalData ;
+  skos:prefLabel "Identifying Personal Data"@en ;
+  dpv:hasPersonalData dpv:IdentifyingPersonalData ;
+  dpv:hasDataCategory dpv:SensitivePersonalData ;
   ex:domain "identity" .
 
 ex:bloodType
   a dpv:PersonalData ;
   skos:prefLabel "Blood Type"@en ;
-  dpv:hasPersonalDataCategory dpv-pd:BloodType ;
+  dpv:hasPersonalData dpv:PersonalData ;
   dpv:hasDataCategory dpv:SpecialCategoryPersonalData ;
   ex:domain "health" .
