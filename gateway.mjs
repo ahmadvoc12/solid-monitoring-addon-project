@@ -5,19 +5,15 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   ENV & CONFIG
+   CONFIG (RAILWAY SAFE)
 ================================ */
-const GATEWAY_PORT = Number(process.env.PORT || 8080); // Railway ONLY cares this
-const CSS_PORT = Number(process.env.CSS_PORT || 3001); // internal
-const BASE_URL = process.env.BASE_URL;                 // REQUIRED
+const GATEWAY_PORT = process.env.PORT || 8080;   // 🔥 WAJIB
+const CSS_PORT = 3000;                           // internal only
+const BASE_URL =
+  process.env.BASE_URL || `http://localhost:${GATEWAY_PORT}`;
 
-if (!BASE_URL) {
-  console.error("❌ BASE_URL env is required");
-  process.exit(1);
-}
-
-const DATA_ROOT = path.resolve(".data");
-const AUDIT_SUBPATH = "private/audit/access";
+const DATA_ROOT = path.resolve(process.cwd(), ".data");
+const AUDIT_PATH = "private/audit/access";
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /* ===============================
@@ -27,14 +23,10 @@ spawn(
   "node",
   [
     "./bin/server.js",
-    "-c",
-    "config/file.json",
-    "-f",
-    "./.data",
-    "-p",
-    String(CSS_PORT),
-    "--baseUrl",
-    BASE_URL
+    "-c", "config/file.json",
+    "-f", DATA_ROOT,
+    "-p", String(CSS_PORT),
+    "--baseUrl", BASE_URL        // 🔥 PUBLIC BASE URL
   ],
   { stdio: "inherit" }
 );
@@ -42,20 +34,49 @@ spawn(
 /* ===============================
    UTIL
 ================================ */
-function detectPod(pathname) {
-  const seg = pathname.split("/").filter(Boolean);
-  return seg.length ? seg[0] : null;
-}
+const detectPod = pathname =>
+  pathname.split("/").filter(Boolean)[0] || null;
 
-function isAuditResource(pathname) {
-  return pathname.includes("/private/audit/");
+/* ===============================
+   REQUEST FILTERS
+================================ */
+const isAuthenticated = h => !!h.authorization;
+
+const isProfile = p => p.includes("/profile/card");
+
+const isSystem = p =>
+  p.startsWith("/.well-known") ||
+  p.startsWith("/.oidc") ||
+  p.endsWith(".acl") ||
+  p.includes("/private/audit/");
+
+const isBrowserNav = h =>
+  h["sec-fetch-mode"] === "navigate" ||
+  h["sec-fetch-dest"] === "document";
+
+const isApp = h =>
+  h["sec-fetch-site"] === "cross-site" ||
+  (!!h.authorization && !h["sec-fetch-site"]);
+
+const isRdf = h =>
+  (h["content-type"] || "").match(/turtle|ld\+json|rdf\+xml/i);
+
+/* ===============================
+   DEDUP (token + resource)
+================================ */
+const seen = new Set();
+function isRepeated(auth, pathname) {
+  const key = `${auth || "anon"}::${pathname}`;
+  if (seen.has(key)) return true;
+  seen.add(key);
+  return false;
 }
 
 /* ===============================
-   ENSURE AUDIT LOG
+   AUDIT FILE PREP
 ================================ */
 async function ensureAuditLog(pod) {
-  const dir = path.join(DATA_ROOT, pod, AUDIT_SUBPATH);
+  const dir = path.join(DATA_ROOT, pod, AUDIT_PATH);
   const file = path.join(dir, "log.ttl");
 
   await fs.mkdir(dir, { recursive: true });
@@ -65,158 +86,175 @@ async function ensureAuditLog(pod) {
   } catch {
     await fs.writeFile(
       file,
-`@prefix dpv: <https://www.w3.org/ns/dpv#> .
-@prefix dpv-pd: <https://www.w3.org/ns/dpv/pd#> .
+`@prefix dpv: <https://w3id.org/dpv#> .
 @prefix dct: <http://purl.org/dc/terms/> .
 @prefix ex: <https://example.org/solid/audit#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix schema: <https://schema.org/> .
 
 `
     );
-    console.log("📝 Created audit log:", file);
   }
 
   return file;
 }
 
 /* ===============================
-   SENSITIVE DETECTION
+   RDF EXTRACTION (VALUE SAFE)
 ================================ */
-function detectSensitiveFromTtl(ttl) {
-  if (!ttl || typeof ttl !== "string") return null;
+function extractPersonalData(rdf) {
+  const result = {
+    personalData: [],
+    dataCategories: [],
+    values: [],
+    sensitive: false
+  };
 
-  const found = [];
+  if (!rdf || typeof rdf !== "string") return result;
 
-  if (ttl.includes("dpv/pd#NationalIdentificationNumber")) {
-    found.push({
-      iri: "<https://www.w3.org/ns/dpv/pd#NationalIdentificationNumber>",
-      category: "dpv:HighlySensitivePersonalData"
+  // dpv:hasPersonalData
+  rdf.match(/dpv:hasPersonalData\s+([^;]+);/g)
+    ?.forEach(block => {
+      block.match(/dpv:[A-Za-z0-9]+/g)
+        ?.forEach(iri => {
+          if (!result.personalData.includes(iri)) {
+            result.personalData.push(iri);
+          }
+        });
     });
-  }
 
-  if (ttl.includes("dpv/pd#BloodType")) {
-    found.push({
-      iri: "<https://www.w3.org/ns/dpv/pd#BloodType>",
-      category: "dpv:SpecialCategoryPersonalData"
+  // dpv:hasDataCategory
+  rdf.match(/dpv:hasDataCategory\s+([^;]+);/g)
+    ?.forEach(block => {
+      block.match(/dpv:[A-Za-z0-9]+/g)
+        ?.forEach(cat => {
+          if (!result.dataCategories.includes(cat)) {
+            result.dataCategories.push(cat);
+          }
+        });
     });
-  }
 
-  return found.length ? found : null;
+  // REAL DATA VALUES ONLY (NO TIME)
+  const blood = rdf.match(/schema:bloodType\s+"([^"]+)"/);
+  if (blood) result.values.push(blood[1]);
+
+  const nid = rdf.match(/schema:identifier\s+"([^"]+)"/);
+  if (nid) result.values.push(nid[1]);
+
+  result.sensitive = result.dataCategories.some(c =>
+    c.includes("HighlySensitive") ||
+    c.includes("SpecialCategory")
+  );
+
+  return result;
 }
 
 /* ===============================
-   AUDIT WRITER
+   AUDIT WRITER (PUBLIC URL)
 ================================ */
-async function writeAudit({ pod, method, pathname, headers, resourceBody }) {
+async function writeAudit({ pod, method, rdf, resourcePath }) {
   if (!pod) return;
-  if (isAuditResource(pathname)) return;
 
-  const sensitive = detectSensitiveFromTtl(resourceBody);
   const logFile = await ensureAuditLog(pod);
+  const parsed = extractPersonalData(rdf);
 
   const id = `log-${Date.now()}`;
   const now = new Date().toISOString();
 
-  const controller =
-    headers.origin ||
-    headers.referer ||
-    headers["user-agent"] ||
-    "urn:unknown:app";
-
-  const processing = method === "GET" ? "dpv:Access" : "dpv:Create";
-
   let ttl = `
 ex:${id}
   a dpv:PersonalDataHandling ;
-  dpv:hasDataController <${controller}> ;
-  dpv:hasProcessing ${processing} ;
+  dpv:hasProcessing ${method === "GET" ? "dpv:Access" : "dpv:Create"} ;
+  dpv:hasResource <${BASE_URL}${resourcePath}> ;
 `;
 
-  if (sensitive) {
-    for (const s of sensitive) {
-      ttl += `  dpv:hasPersonalData ${s.iri} ;\n`;
-      ttl += `  dpv:hasDataCategory ${s.category} ;\n`;
-    }
-    ttl += `  ex:processingType "SensitiveDataAccess" ;\n`;
-  } else {
-    ttl += `  ex:processingType "NormalDataAccess" ;\n`;
-  }
+  parsed.personalData.forEach(iri => {
+    ttl += `  dpv:hasPersonalData ${iri} ;\n`;
+  });
 
-  ttl += `  dct:created "${now}"^^xsd:dateTime .\n`;
+  parsed.dataCategories.forEach(cat => {
+    ttl += `  dpv:hasDataCategory ${cat} ;\n`;
+  });
+
+  parsed.values.forEach(v => {
+    ttl += `  ex:hasDataValue "${v}" ;\n`;
+  });
+
+  ttl += `
+  ex:processingType "${
+    parsed.sensitive
+      ? "SensitiveDataAccess"
+      : parsed.personalData.length > 0
+      ? "PersonalDataAccess"
+      : "NonPersonalDataAccess"
+  }" ;
+  dct:created "${now}"^^xsd:dateTime .
+`;
 
   await fs.appendFile(logFile, ttl);
 
   console.log(
-    `🧾 AUDIT: ${pod}`,
-    sensitive ? "🔴 SENSITIVE ACCESS" : "🟢 NORMAL ACCESS"
+    "🧾 AUDIT →",
+    pod,
+    parsed.sensitive
+      ? "🔴 SENSITIVE"
+      : parsed.personalData.length > 0
+      ? "🟡 PERSONAL"
+      : "🟢 NON-PERSONAL"
   );
 }
 
 /* ===============================
    GATEWAY SERVER (PUBLIC)
 ================================ */
-http
-  .createServer(async (req, res) => {
+http.createServer(async (req, res) => {
+  const { method, url, headers } = req;
+  const target = new URL(url, `http://localhost:${CSS_PORT}`);
+  const pod = detectPod(target.pathname);
 
-    // 🔥 Railway health check
-    if (req.url === "/" || req.url === "/health") {
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      return res.end("Solid Gateway OK");
-    }
+  let body = "";
+  for await (const c of req) body += c;
 
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      return res.end();
-    }
+  const proxy = http.request(
+    {
+      hostname: "localhost",
+      port: CSS_PORT,
+      path: url,
+      method,
+      headers
+    },
+    async pres => {
+      let resp = "";
+      for await (const c of pres) resp += c;
 
-    const { method, url, headers } = req;
-    const targetUrl = new URL(url, `http://localhost:${CSS_PORT}`);
-    const pathname = targetUrl.pathname;
+      const shouldAudit =
+        AUDIT_METHODS.includes(method) &&
+        isAuthenticated(headers) &&
+        isRdf(pres.headers) &&
+        isApp(headers) &&
+        !isProfile(target.pathname) &&
+        !isSystem(target.pathname) &&
+        !isBrowserNav(headers) &&
+        !(method === "GET" && isRepeated(headers.authorization, target.pathname));
 
-    console.log("➡️ GATEWAY HIT:", method, pathname);
-
-    const pod = detectPod(pathname);
-
-    let requestBody = "";
-    for await (const chunk of req) requestBody += chunk.toString();
-
-    const proxyReq = http.request(
-      {
-        hostname: "localhost",
-        port: CSS_PORT,
-        path: url,
-        method,
-        headers: {
-          ...headers,
-          host: new URL(BASE_URL).host,
-          "x-forwarded-host": new URL(BASE_URL).host,
-          "x-forwarded-proto": "https"
-        }
-      },
-      async proxyRes => {
-        let responseBody = "";
-        for await (const chunk of proxyRes) responseBody += chunk.toString();
-
-        if (AUDIT_METHODS.includes(method)) {
-          await writeAudit({
-            pod,
-            method,
-            pathname,
-            headers,
-            resourceBody: method === "GET" ? responseBody : requestBody
-          }).catch(console.error);
-        }
-
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        res.end(responseBody);
+      if (shouldAudit) {
+        await writeAudit({
+          pod,
+          method,
+          rdf: method === "GET" ? resp : body,
+          resourcePath: target.pathname
+        });
       }
-    );
 
-    if (requestBody) proxyReq.write(requestBody);
-    proxyReq.end();
-  })
-  .listen(GATEWAY_PORT, "0.0.0.0", () => {
-    console.log(`✅ Solid Gateway PUBLIC :${GATEWAY_PORT}`);
-    console.log(`🌍 BASE_URL = ${BASE_URL}`);
-    console.log(`🔒 CSS INTERNAL :${CSS_PORT}`);
-  });
+      res.writeHead(pres.statusCode, pres.headers);
+      res.end(resp);
+    }
+  );
+
+  if (body) proxy.write(body);
+  proxy.end();
+
+}).listen(GATEWAY_PORT, "0.0.0.0", () => {
+  console.log(`✅ Solid Gateway PUBLIC @ ${BASE_URL}`);
+  console.log(`🔒 Solid CSS INTERNAL @ http://localhost:${CSS_PORT}`);
+});
