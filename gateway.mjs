@@ -5,23 +5,21 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   CONFIG (RAILWAY CORRECT)
+   CONFIG (RAILWAY FINAL)
 ================================ */
-// Railway expose PUBLIC PORT = 3000
-const GATEWAY_PORT = Number(process.env.PORT) || 3000;
-
-// CSS HARUS INTERNAL (JANGAN 3000)
-const CSS_PORT = 3001;
+const PUBLIC_PORT = process.env.PORT || 3000; // 🚨 HARUS 3000
+const CSS_PORT = 3001;                        // internal only
 
 const BASE_URL =
-  process.env.BASE_URL || `http://localhost:${GATEWAY_PORT}`;
+  process.env.BASE_URL ||
+  "https://solid-monitoring-addon-project-production.up.railway.app";
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_PATH = "private/audit/access";
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /* ===============================
-   START SOLID CSS (INTERNAL ONLY)
+   START SOLID CSS (INTERNAL)
 ================================ */
 spawn(
   "node",
@@ -29,7 +27,7 @@ spawn(
     "./bin/server.js",
     "-c", "config/file.json",
     "-f", DATA_ROOT,
-    "-p", String(CSS_PORT),   // 🔒 INTERNAL 3001
+    "-p", String(CSS_PORT),
     "--baseUrl", BASE_URL
   ],
   { stdio: "inherit" }
@@ -60,12 +58,12 @@ const looksLikeRdf = (headers, body) => {
 };
 
 /* ===============================
-   DEDUP (RESOURCE-LEVEL)
+   DEDUP
 ================================ */
 const seen = new Set();
-const isRepeated = pathname => {
-  if (seen.has(pathname)) return true;
-  seen.add(pathname);
+const isRepeated = path => {
+  if (seen.has(path)) return true;
+  seen.add(path);
   return false;
 };
 
@@ -97,71 +95,24 @@ async function ensureAuditLog(pod) {
 }
 
 /* ===============================
-   RDF EXTRACTION
+   AUDIT WRITER (SIMPLE & STABLE)
 ================================ */
-function extractPersonalData(rdf) {
-  const result = {
-    personalData: [],
-    values: [],
-    sensitive: false
-  };
-
-  if (!rdf) return result;
-
-  rdf.match(/dpv:[A-Za-z]+/g)?.forEach(x => {
-    if (!result.personalData.includes(x)) {
-      result.personalData.push(x);
-    }
-  });
-
-  const blood = rdf.match(/schema:bloodType\s+"([^"]+)"/);
-  if (blood) result.values.push(blood[1]);
-
-  const nid = rdf.match(/schema:identifier\s+"([^"]+)"/);
-  if (nid) result.values.push(nid[1]);
-
-  result.sensitive = result.personalData.some(p =>
-    p.includes("Blood") || p.includes("Identification")
-  );
-
-  return result;
-}
-
-/* ===============================
-   AUDIT WRITER
-================================ */
-async function writeAudit({ pod, method, rdf, pathName }) {
+async function writeAudit({ pod, pathName }) {
   if (!pod) return;
 
-  const logFile = await ensureAuditLog(pod);
-  const parsed = extractPersonalData(rdf);
-
+  const file = await ensureAuditLog(pod);
   const id = `log-${Date.now()}`;
-  const now = new Date().toISOString();
 
-  let ttl = `
+  await fs.appendFile(
+    file,
+`
 ex:${id}
   a dpv:PersonalDataHandling ;
   dpv:hasProcessing dpv:Access ;
   dpv:hasResource <${BASE_URL}${pathName}> ;
-`;
-
-  parsed.personalData.forEach(p =>
-    ttl += `  dpv:hasPersonalData dpv:${p.replace("dpv:", "")} ;\n`
+  dct:created "${new Date().toISOString()}"^^xsd:dateTime .
+`
   );
-
-  parsed.values.forEach(v =>
-    ttl += `  ex:hasDataValue "${v}" ;\n`
-  );
-
-  ttl += `
-  ex:processingType "${
-    parsed.sensitive ? "SensitiveDataAccess" : "DataAccess"
-  }" ;
-  dct:created "${now}"^^xsd:dateTime .
-`;
-
-  await fs.appendFile(logFile, ttl);
 
   console.log("🧾 AUDIT LOGGED →", pod, pathName);
 }
@@ -172,18 +123,14 @@ ex:${id}
 http.createServer(async (req, res) => {
   const { method, url } = req;
 
-  // HEALTHCHECK (RAILWAY)
   if (url === "/" || url === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok" }));
+    res.writeHead(200);
+    res.end("OK");
     return;
   }
 
   const target = new URL(url, `http://localhost:${CSS_PORT}`);
   const pod = detectPod(target.pathname);
-
-  let body = "";
-  for await (const c of req) body += c;
 
   const proxy = http.request(
     {
@@ -194,34 +141,30 @@ http.createServer(async (req, res) => {
       headers: req.headers
     },
     async pres => {
-      let resp = "";
-      for await (const c of pres) resp += c;
+      let body = "";
+      for await (const c of pres) body += c;
 
       const shouldAudit =
         AUDIT_METHODS.includes(method) &&
         target.pathname.includes("/pod/") &&
         !isSystemPath(target.pathname) &&
-        looksLikeRdf(pres.headers, resp) &&
+        looksLikeRdf(pres.headers, body) &&
         !(method === "GET" && isRepeated(target.pathname));
 
       if (shouldAudit) {
         await writeAudit({
           pod,
-          method,
-          rdf: resp,
           pathName: target.pathname
         });
       }
 
       res.writeHead(pres.statusCode, pres.headers);
-      res.end(resp);
+      res.end(body);
     }
   );
 
-  if (body) proxy.write(body);
   proxy.end();
-
-}).listen(GATEWAY_PORT, "0.0.0.0", () => {
+}).listen(PUBLIC_PORT, "0.0.0.0", () => {
   console.log(`✅ Solid Gateway PUBLIC @ ${BASE_URL}`);
   console.log(`🔒 Solid CSS INTERNAL @ http://localhost:${CSS_PORT}`);
 });
