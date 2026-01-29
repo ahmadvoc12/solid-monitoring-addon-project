@@ -1,34 +1,23 @@
 {
   "extends": "@tsconfig/node18/tsconfig.json",
   "compilerOptions": {
-    /* Output */
-    "outDir": "dist",
+    "incremental": true,
+    "lib": [ "es2021" ],
+    "moduleResolution": "node16",
     "declaration": true,
-    "sourceMap": true,
     "inlineSources": true,
-    "stripInternal": true,
-
-    /* Language & Runtime */
-    "target": "ES2021",
-    "lib": ["ES2021", "DOM"],
-    "moduleResolution": "node",
-
-    /* Type System */
-    "strict": false,
-    "noImplicitAny": false,
+    "newLine": "lf",
+    "outDir": "dist",
     "preserveConstEnums": true,
-    "skipLibCheck": true,
-
-    /* Types */
-    "typeRoots": [
-      "./src/types",
-      "./node_modules/@types"
-    ],
-
-    /* Quality of life */
-    "newLine": "lf"
+    "sourceMap": true,
+    "stripInternal": true
   },
-  "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "node_modules"
+  ],
+  "typeRoots": ["./src/types", "./node_modules/@types"]
+
 }
-  
