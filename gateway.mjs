@@ -7,8 +7,9 @@ import { spawn } from "child_process";
 /* ===============================
    CONFIG (RAILWAY SAFE)
 ================================ */
-const GATEWAY_PORT = process.env.PORT || 8080;   // 🔥 WAJIB
-const CSS_PORT = 3000;                           // internal only
+const GATEWAY_PORT = process.env.PORT || 8080;
+const CSS_PORT = 3000;
+
 const BASE_URL =
   process.env.BASE_URL || `http://localhost:${GATEWAY_PORT}`;
 
@@ -26,7 +27,7 @@ spawn(
     "-c", "config/file.json",
     "-f", DATA_ROOT,
     "-p", String(CSS_PORT),
-    "--baseUrl", BASE_URL        // 🔥 PUBLIC BASE URL
+    "--baseUrl", BASE_URL
   ],
   { stdio: "inherit" }
 );
@@ -37,40 +38,33 @@ spawn(
 const detectPod = pathname =>
   pathname.split("/").filter(Boolean)[0] || null;
 
-/* ===============================
-   REQUEST FILTERS
-================================ */
-const isAuthenticated = h => !!h.authorization;
-
-const isProfile = p => p.includes("/profile/card");
-
-const isSystem = p =>
+const isSystemPath = p =>
   p.startsWith("/.well-known") ||
   p.startsWith("/.oidc") ||
+  p.startsWith("/.account") ||
   p.endsWith(".acl") ||
   p.includes("/private/audit/");
 
-const isBrowserNav = h =>
-  h["sec-fetch-mode"] === "navigate" ||
-  h["sec-fetch-dest"] === "document";
-
-const isApp = h =>
-  h["sec-fetch-site"] === "cross-site" ||
-  (!!h.authorization && !h["sec-fetch-site"]);
-
-const isRdf = h =>
-  (h["content-type"] || "").match(/turtle|ld\+json|rdf\+xml/i);
+const looksLikeRdf = (headers, body) => {
+  const ct = headers["content-type"] || "";
+  return (
+    ct.includes("turtle") ||
+    ct.includes("rdf") ||
+    ct.includes("ld+json") ||
+    body.includes("dpv:") ||
+    body.includes("@prefix")
+  );
+};
 
 /* ===============================
-   DEDUP (token + resource)
+   DEDUP (RESOURCE-LEVEL)
 ================================ */
 const seen = new Set();
-function isRepeated(auth, pathname) {
-  const key = `${auth || "anon"}::${pathname}`;
-  if (seen.has(key)) return true;
-  seen.add(key);
+const isRepeated = pathname => {
+  if (seen.has(pathname)) return true;
+  seen.add(pathname);
   return false;
-}
+};
 
 /* ===============================
    AUDIT FILE PREP
@@ -100,7 +94,7 @@ async function ensureAuditLog(pod) {
 }
 
 /* ===============================
-   RDF EXTRACTION (VALUE SAFE)
+   RDF EXTRACTION (ROBUST)
 ================================ */
 function extractPersonalData(rdf) {
   const result = {
@@ -110,49 +104,31 @@ function extractPersonalData(rdf) {
     sensitive: false
   };
 
-  if (!rdf || typeof rdf !== "string") return result;
+  if (!rdf) return result;
 
-  // dpv:hasPersonalData
-  rdf.match(/dpv:hasPersonalData\s+([^;]+);/g)
-    ?.forEach(block => {
-      block.match(/dpv:[A-Za-z0-9]+/g)
-        ?.forEach(iri => {
-          if (!result.personalData.includes(iri)) {
-            result.personalData.push(iri);
-          }
-        });
-    });
+  rdf.match(/dpv:[A-Za-z]+/g)?.forEach(x => {
+    if (!result.personalData.includes(x)) {
+      result.personalData.push(x);
+    }
+  });
 
-  // dpv:hasDataCategory
-  rdf.match(/dpv:hasDataCategory\s+([^;]+);/g)
-    ?.forEach(block => {
-      block.match(/dpv:[A-Za-z0-9]+/g)
-        ?.forEach(cat => {
-          if (!result.dataCategories.includes(cat)) {
-            result.dataCategories.push(cat);
-          }
-        });
-    });
-
-  // REAL DATA VALUES ONLY (NO TIME)
   const blood = rdf.match(/schema:bloodType\s+"([^"]+)"/);
   if (blood) result.values.push(blood[1]);
 
   const nid = rdf.match(/schema:identifier\s+"([^"]+)"/);
   if (nid) result.values.push(nid[1]);
 
-  result.sensitive = result.dataCategories.some(c =>
-    c.includes("HighlySensitive") ||
-    c.includes("SpecialCategory")
+  result.sensitive = result.personalData.some(p =>
+    p.includes("Blood") || p.includes("Identification")
   );
 
   return result;
 }
 
 /* ===============================
-   AUDIT WRITER (PUBLIC URL)
+   AUDIT WRITER
 ================================ */
-async function writeAudit({ pod, method, rdf, resourcePath }) {
+async function writeAudit({ pod, method, rdf, pathName }) {
   if (!pod) return;
 
   const logFile = await ensureAuditLog(pod);
@@ -164,51 +140,42 @@ async function writeAudit({ pod, method, rdf, resourcePath }) {
   let ttl = `
 ex:${id}
   a dpv:PersonalDataHandling ;
-  dpv:hasProcessing ${method === "GET" ? "dpv:Access" : "dpv:Create"} ;
-  dpv:hasResource <${BASE_URL}${resourcePath}> ;
+  dpv:hasProcessing dpv:Access ;
+  dpv:hasResource <${BASE_URL}${pathName}> ;
 `;
 
-  parsed.personalData.forEach(iri => {
-    ttl += `  dpv:hasPersonalData ${iri} ;\n`;
-  });
+  parsed.personalData.forEach(p =>
+    ttl += `  dpv:hasPersonalData dpv:${p.replace("dpv:", "")} ;\n`
+  );
 
-  parsed.dataCategories.forEach(cat => {
-    ttl += `  dpv:hasDataCategory ${cat} ;\n`;
-  });
-
-  parsed.values.forEach(v => {
-    ttl += `  ex:hasDataValue "${v}" ;\n`;
-  });
+  parsed.values.forEach(v =>
+    ttl += `  ex:hasDataValue "${v}" ;\n`
+  );
 
   ttl += `
   ex:processingType "${
-    parsed.sensitive
-      ? "SensitiveDataAccess"
-      : parsed.personalData.length > 0
-      ? "PersonalDataAccess"
-      : "NonPersonalDataAccess"
+    parsed.sensitive ? "SensitiveDataAccess" : "DataAccess"
   }" ;
   dct:created "${now}"^^xsd:dateTime .
 `;
 
   await fs.appendFile(logFile, ttl);
 
-  console.log(
-    "🧾 AUDIT →",
-    pod,
-    parsed.sensitive
-      ? "🔴 SENSITIVE"
-      : parsed.personalData.length > 0
-      ? "🟡 PERSONAL"
-      : "🟢 NON-PERSONAL"
-  );
+  console.log("🧾 AUDIT LOGGED →", pod, pathName);
 }
 
 /* ===============================
-   GATEWAY SERVER (PUBLIC)
+   GATEWAY SERVER
 ================================ */
 http.createServer(async (req, res) => {
-  const { method, url, headers } = req;
+  const { method, url } = req;
+
+  if (url === "/" || url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+
   const target = new URL(url, `http://localhost:${CSS_PORT}`);
   const pod = detectPod(target.pathname);
 
@@ -221,7 +188,7 @@ http.createServer(async (req, res) => {
       port: CSS_PORT,
       path: url,
       method,
-      headers
+      headers: req.headers
     },
     async pres => {
       let resp = "";
@@ -229,20 +196,17 @@ http.createServer(async (req, res) => {
 
       const shouldAudit =
         AUDIT_METHODS.includes(method) &&
-        isAuthenticated(headers) &&
-        isRdf(pres.headers) &&
-        isApp(headers) &&
-        !isProfile(target.pathname) &&
-        !isSystem(target.pathname) &&
-        !isBrowserNav(headers) &&
-        !(method === "GET" && isRepeated(headers.authorization, target.pathname));
+        target.pathname.includes("/pod/") &&
+        !isSystemPath(target.pathname) &&
+        looksLikeRdf(pres.headers, resp) &&
+        !(method === "GET" && isRepeated(target.pathname));
 
       if (shouldAudit) {
         await writeAudit({
           pod,
           method,
-          rdf: method === "GET" ? resp : body,
-          resourcePath: target.pathname
+          rdf: resp,
+          pathName: target.pathname
         });
       }
 
