@@ -1,12 +1,16 @@
 FROM node:18-alpine
 
-WORKDIR /community-server
+# App directory
+WORKDIR /app
 
+# Copy project
 COPY . .
 
 ENV NODE_ENV=production
 
-# Railway listens ONLY on this
-EXPOSE 8080
+# 🚨 Railway PUBLIC port (HARUS sama)
+EXPOSE 3000
 
-CMD ["npm", "run", "start:gateway"]
+# Railway injects PORT automatically
+# Gateway will listen on process.env.PORT || 3000
+CMD ["node", "gateway.mjs"]
