@@ -5,10 +5,13 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   CONFIG (RAILWAY SAFE)
+   CONFIG (RAILWAY CORRECT)
 ================================ */
-const GATEWAY_PORT = process.env.PORT || 8080;
-const CSS_PORT = 3000;
+// Railway expose PUBLIC PORT = 3000
+const GATEWAY_PORT = Number(process.env.PORT) || 3000;
+
+// CSS HARUS INTERNAL (JANGAN 3000)
+const CSS_PORT = 3001;
 
 const BASE_URL =
   process.env.BASE_URL || `http://localhost:${GATEWAY_PORT}`;
@@ -18,7 +21,7 @@ const AUDIT_PATH = "private/audit/access";
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /* ===============================
-   START SOLID CSS (INTERNAL)
+   START SOLID CSS (INTERNAL ONLY)
 ================================ */
 spawn(
   "node",
@@ -26,7 +29,7 @@ spawn(
     "./bin/server.js",
     "-c", "config/file.json",
     "-f", DATA_ROOT,
-    "-p", String(CSS_PORT),
+    "-p", String(CSS_PORT),   // 🔒 INTERNAL 3001
     "--baseUrl", BASE_URL
   ],
   { stdio: "inherit" }
@@ -51,8 +54,8 @@ const looksLikeRdf = (headers, body) => {
     ct.includes("turtle") ||
     ct.includes("rdf") ||
     ct.includes("ld+json") ||
-    body.includes("dpv:") ||
-    body.includes("@prefix")
+    body.includes("@prefix") ||
+    body.includes("dpv:")
   );
 };
 
@@ -94,12 +97,11 @@ async function ensureAuditLog(pod) {
 }
 
 /* ===============================
-   RDF EXTRACTION (ROBUST)
+   RDF EXTRACTION
 ================================ */
 function extractPersonalData(rdf) {
   const result = {
     personalData: [],
-    dataCategories: [],
     values: [],
     sensitive: false
   };
@@ -165,11 +167,12 @@ ex:${id}
 }
 
 /* ===============================
-   GATEWAY SERVER
+   GATEWAY SERVER (PUBLIC)
 ================================ */
 http.createServer(async (req, res) => {
   const { method, url } = req;
 
+  // HEALTHCHECK (RAILWAY)
   if (url === "/" || url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
