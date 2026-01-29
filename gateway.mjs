@@ -5,9 +5,9 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   CONFIG (RAILWAY FINAL)
+   CONFIG (FINAL – RAILWAY SAFE)
 ================================ */
-const PUBLIC_PORT = process.env.PORT || 3000; // 🚨 HARUS 3000
+const PUBLIC_PORT = process.env.PORT || 3000; // MUST match Railway
 const CSS_PORT = 3001;                        // internal only
 
 const BASE_URL =
@@ -34,7 +34,7 @@ spawn(
 );
 
 /* ===============================
-   UTIL
+   HELPERS
 ================================ */
 const detectPod = pathname =>
   pathname.split("/").filter(Boolean)[0] || null;
@@ -46,19 +46,17 @@ const isSystemPath = p =>
   p.endsWith(".acl") ||
   p.includes("/private/audit/");
 
-const looksLikeRdf = (headers, body) => {
+const looksLikeRdf = headers => {
   const ct = headers["content-type"] || "";
   return (
     ct.includes("turtle") ||
     ct.includes("rdf") ||
-    ct.includes("ld+json") ||
-    body.includes("@prefix") ||
-    body.includes("dpv:")
+    ct.includes("ld+json")
   );
 };
 
 /* ===============================
-   DEDUP
+   DEDUP (PATH-LEVEL)
 ================================ */
 const seen = new Set();
 const isRepeated = path => {
@@ -85,7 +83,6 @@ async function ensureAuditLog(pod) {
 @prefix dct: <http://purl.org/dc/terms/> .
 @prefix ex: <https://example.org/solid/audit#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix schema: <https://schema.org/> .
 
 `
     );
@@ -95,18 +92,17 @@ async function ensureAuditLog(pod) {
 }
 
 /* ===============================
-   AUDIT WRITER (SIMPLE & STABLE)
+   AUDIT WRITER (NON-BLOCKING)
 ================================ */
 async function writeAudit({ pod, pathName }) {
   if (!pod) return;
 
   const file = await ensureAuditLog(pod);
-  const id = `log-${Date.now()}`;
 
   await fs.appendFile(
     file,
 `
-ex:${id}
+ex:log-${Date.now()}
   a dpv:PersonalDataHandling ;
   dpv:hasProcessing dpv:Access ;
   dpv:hasResource <${BASE_URL}${pathName}> ;
@@ -120,11 +116,12 @@ ex:${id}
 /* ===============================
    GATEWAY SERVER (PUBLIC)
 ================================ */
-http.createServer(async (req, res) => {
+http.createServer((req, res) => {
   const { method, url } = req;
 
+  /* ---- HEALTH CHECK ---- */
   if (url === "/" || url === "/health") {
-    res.writeHead(200);
+    res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("OK");
     return;
   }
@@ -140,30 +137,31 @@ http.createServer(async (req, res) => {
       method,
       headers: req.headers
     },
-    async pres => {
-      let body = "";
-      for await (const c of pres) body += c;
-
+    pres => {
+      /* ---- AUDIT (ASYNC, NON BLOCKING) ---- */
       const shouldAudit =
         AUDIT_METHODS.includes(method) &&
         target.pathname.includes("/pod/") &&
         !isSystemPath(target.pathname) &&
-        looksLikeRdf(pres.headers, body) &&
+        looksLikeRdf(pres.headers) &&
         !(method === "GET" && isRepeated(target.pathname));
 
       if (shouldAudit) {
-        await writeAudit({
+        writeAudit({
           pod,
           pathName: target.pathname
-        });
+        }).catch(console.error);
       }
 
+      /* ---- STREAM RESPONSE BACK ---- */
       res.writeHead(pres.statusCode, pres.headers);
-      res.end(body);
+      pres.pipe(res);
     }
   );
 
-  proxy.end();
+  /* 🔥 INI YANG SEBELUMNYA HILANG */
+  req.pipe(proxy);
+
 }).listen(PUBLIC_PORT, "0.0.0.0", () => {
   console.log(`✅ Solid Gateway PUBLIC @ ${BASE_URL}`);
   console.log(`🔒 Solid CSS INTERNAL @ http://localhost:${CSS_PORT}`);
