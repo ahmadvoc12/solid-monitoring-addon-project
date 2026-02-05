@@ -5,15 +5,15 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   CONFIG (🚨 FIXED)
+   CONFIG
 ================================ */
-// Railway PUBLIC port → Gateway
+// Railway injects PORT (8080, dll)
 const GATEWAY_PORT = process.env.PORT || 3000;
 
-// Internal CSS port (NOT exposed)
+// Internal CSS only (JANGAN DIEKSPOS)
 const CSS_PORT = 4000;
 
-// 🚨 DOMAIN PUBLIK RAILWAY (WAJIB BENAR)
+// Domain publik Railway
 const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app";
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
@@ -49,7 +49,6 @@ const FIELD_SCHEMA = {
 
 /* ===============================
    START COMMUNITY SOLID SERVER
-   (🚨 BASE URL FIXED)
 ================================ */
 spawn(
   "node",
@@ -58,8 +57,6 @@ spawn(
     "-c", "config/file.json",
     "-f", DATA_ROOT,
     "-p", String(CSS_PORT),
-
-    // 🚨 HARUS DOMAIN PUBLIK (BUKAN localhost)
     "--baseUrl", PUBLIC_BASE_URL
   ],
   { stdio: "inherit" }
@@ -68,8 +65,8 @@ spawn(
 /* ===============================
    UTIL
 ================================ */
-const detectPod = pathname =>
-  pathname.split("/").filter(Boolean)[0] || null;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const detectPod = pathname => pathname.split("/").filter(Boolean)[0] || null;
 
 const extractAppName = pathname => {
   const seg = pathname.split("/").filter(Boolean);
@@ -119,10 +116,8 @@ async function ensureAuditLog(pod) {
   const file = path.join(dir, "log.ttl");
 
   await fs.mkdir(dir, { recursive: true });
-
-  try {
-    await fs.access(file);
-  } catch {
+  try { await fs.access(file); }
+  catch {
     await fs.writeFile(
       file,
 `@prefix dpv: <https://w3id.org/dpv#> .
@@ -133,7 +128,6 @@ async function ensureAuditLog(pod) {
 `
     );
   }
-
   return file;
 }
 
@@ -151,11 +145,10 @@ function extractPersonalData(rdf, pathname) {
 
   const app = extractAppName(pathname);
   const resourceSchema = RESOURCE_SCHEMA[app];
-
   if (resourceSchema) {
     result.personalData.push(resourceSchema.personal);
     result.dataCategories.push(resourceSchema.category);
-    result.sensitive = resourceSchema.sensitive;
+    result.sensitive = true;
   }
 
   if (!rdf || typeof rdf !== "string") return result;
@@ -177,7 +170,6 @@ function extractPersonalData(rdf, pathname) {
 
   rdf.match(/<https?:\/\/[^>]+>\s+"([^"]+)"/g)?.forEach(m => {
     const [, iri, value] = m.match(/<(https?:\/\/[^>]+)>\s+"([^"]+)"/);
-
     result.fields.push(iri);
     result.values.push(value);
 
@@ -221,72 +213,86 @@ ex:${id}
     ttl += `  ex:hasDataValue "${parsed.values[i]}" ;\n`;
   });
 
-  ttl += `
-  dct:created "${now}"^^xsd:dateTime .
-`;
-
+  ttl += `  dct:created "${now}"^^xsd:dateTime .\n`;
   await fs.appendFile(logFile, ttl);
-
-  console.log("🧾 AUDIT →", appName, parsed.sensitive ? "🔴 SENSITIVE" : "🟢 NORMAL");
 }
 
 /* ===============================
-   GATEWAY SERVER (REVERSE PROXY)
+   GATEWAY SERVER
 ================================ */
-http.createServer(async (req, res) => {
-  const { method, url, headers } = req;
-  const target = new URL(url, `http://localhost:${CSS_PORT}`);
-  const pod = detectPod(target.pathname);
+(async () => {
+  // ⏳ Tunggu CSS siap (PENTING)
+  await sleep(4000);
 
-  let body = "";
-  for await (const c of req) body += c;
+  http.createServer(async (req, res) => {
+    const { method, url, headers } = req;
 
-  const proxy = http.request(
-    {
-      hostname: "localhost",
-      port: CSS_PORT,
-      path: url,
-      method,
-      headers: {
-        ...headers,
-
-        // 🚨 Forwarded headers (WAJIB UNTUK CSS)
-        "x-forwarded-host": headers.host,
-        "x-forwarded-proto": "https"
-      }
-    },
-    async pres => {
-      let resp = "";
-      for await (const c of pres) resp += c;
-
-      const shouldAudit =
-        AUDIT_METHODS.includes(method) &&
-        isAuthenticated(headers) &&
-        isRdf(pres.headers) &&
-        isApp(headers) &&
-        !isProfile(target.pathname) &&
-        !isSystem(target.pathname) &&
-        !isBrowserNav(headers) &&
-        !(method === "GET" && isRepeated(headers.authorization, target.pathname));
-
-      if (shouldAudit) {
-        await writeAudit({
-          pod,
-          method,
-          rdf: method === "GET" ? resp : body,
-          resource: `${PUBLIC_BASE_URL}${target.pathname}`,
-          pathname: target.pathname
-        });
-      }
-
-      res.writeHead(pres.statusCode, pres.headers);
-      res.end(resp);
+    /* 🚑 RAILWAY HEALTHCHECK */
+    if (method === "GET" && (url === "/" || url === "/health")) {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      return res.end("OK");
     }
-  );
 
-  if (body) proxy.write(body);
-  proxy.end();
+    /* 🚫 BLOCK INTERNAL SOLID ACCOUNT */
+    if (url.startsWith("/.account")) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      return res.end("Not available via gateway");
+    }
 
-}).listen(GATEWAY_PORT, () => {
-  console.log(`✅ Solid Gateway running on port ${GATEWAY_PORT}`);
-});
+    const target = new URL(url, `http://localhost:${CSS_PORT}`);
+    const pod = detectPod(target.pathname);
+
+    let body = "";
+    for await (const c of req) body += c;
+
+    const fHeaders = { ...headers };
+    delete fHeaders["content-length"];
+
+    const proxy = http.request(
+      {
+        hostname: "localhost",
+        port: CSS_PORT,
+        path: url,
+        method,
+        headers: {
+          ...fHeaders,
+          "x-forwarded-host": headers.host,
+          "x-forwarded-proto": "https"
+        }
+      },
+      async pres => {
+        let resp = "";
+        for await (const c of pres) resp += c;
+
+        const shouldAudit =
+          AUDIT_METHODS.includes(method) &&
+          isAuthenticated(headers) &&
+          isRdf(pres.headers) &&
+          isApp(headers) &&
+          !isProfile(target.pathname) &&
+          !isSystem(target.pathname) &&
+          !isBrowserNav(headers) &&
+          !(method === "GET" && isRepeated(headers.authorization, target.pathname));
+
+        if (shouldAudit) {
+          await writeAudit({
+            pod,
+            method,
+            rdf: method === "GET" ? resp : body,
+            resource: `${PUBLIC_BASE_URL}${target.pathname}`,
+            pathname: target.pathname
+          });
+        }
+
+        res.writeHead(pres.statusCode, pres.headers);
+        res.end(resp);
+      }
+    );
+
+    if (body) proxy.write(body);
+    proxy.end();
+  })
+  .listen(GATEWAY_PORT, () => {
+    console.log(`✅ Solid Gateway running on port ${GATEWAY_PORT}`);
+  });
+})();
