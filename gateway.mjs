@@ -8,7 +8,7 @@ import { spawn } from "child_process";
    CONFIG
 ================================ */
 // Railway injects PORT (8080, dll)
-const GATEWAY_PORT = process.env.PORT || 3000;
+const GATEWAY_PORT = 3000;
 
 // Internal CSS only (JANGAN DIEKSPOS)
 const CSS_PORT = 4000;
