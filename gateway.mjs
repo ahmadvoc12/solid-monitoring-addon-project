@@ -7,8 +7,8 @@ import { spawn } from "child_process";
 /* ===============================
    CONFIG
 ================================ */
-const GATEWAY_PORT = 3000;          // 🔒 SAMA DENGAN RAILWAY PORT
-const CSS_PORT = 4000;              // 🔒 INTERNAL ONLY
+const GATEWAY_PORT = 3000;     // SESUAI RAILWAY
+const CSS_PORT = 4000;         // INTERNAL
 const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app";
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
@@ -33,7 +33,9 @@ spawn(
 /* ===============================
    UTIL
 ================================ */
-const detectPod = pathname => pathname.split("/").filter(Boolean)[0] || null;
+const detectPod = pathname =>
+  pathname.split("/").filter(Boolean)[0] || null;
+
 const extractAppName = pathname => {
   const seg = pathname.split("/").filter(Boolean);
   const idx = seg.indexOf("public");
@@ -48,6 +50,7 @@ const isProfile = p => p.includes("/profile/card");
 const isSystem = p =>
   p.startsWith("/.well-known") ||
   p.startsWith("/.oidc") ||
+  p.startsWith("/.account") ||
   p.endsWith(".acl") ||
   p.includes("/private/audit/");
 const isBrowserNav = h =>
@@ -63,26 +66,79 @@ const isRdf = h =>
    DEDUP
 ================================ */
 const seen = new Set();
-const isRepeated = (auth, path) => {
-  const k = `${auth || "anon"}::${path}`;
-  if (seen.has(k)) return true;
-  seen.add(k);
+function isRepeated(auth, pathname) {
+  const key = `${auth || "anon"}::${pathname}`;
+  if (seen.has(key)) return true;
+  seen.add(key);
   return false;
-};
+}
 
 /* ===============================
-   GATEWAY SERVER (🚨 FIXED)
+   AUDIT FILE PREP
+================================ */
+async function ensureAuditLog(pod) {
+  const dir = path.join(DATA_ROOT, pod, AUDIT_PATH);
+  const file = path.join(dir, "log.ttl");
+
+  await fs.mkdir(dir, { recursive: true });
+  try {
+    await fs.access(file);
+  } catch {
+    await fs.writeFile(
+      file,
+`@prefix dpv: <https://w3id.org/dpv#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix ex: <https://example.org/solid/audit#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+`
+    );
+  }
+  return file;
+}
+
+/* ===============================
+   AUDIT WRITER (AKTIF)
+================================ */
+async function writeAudit({ pod, method, rdf, resource, pathname }) {
+  if (!pod) return;
+
+  const logFile = await ensureAuditLog(pod);
+  const id = `log-${Date.now()}`;
+  const now = new Date().toISOString();
+  const appName = extractAppName(pathname);
+
+  const ttl = `
+ex:${id}
+  a dpv:PersonalDataHandling ;
+  dpv:hasProcessing ${method === "GET" ? "dpv:Access" : "dpv:Create"} ;
+  dpv:hasResource <${resource}> ;
+  ex:accessedByApp "${appName}" ;
+  dct:created "${now}"^^xsd:dateTime .
+`;
+
+  await fs.appendFile(logFile, ttl);
+
+  console.log(
+    "🧾 AUDIT →",
+    method,
+    resource
+  );
+}
+
+/* ===============================
+   GATEWAY SERVER
 ================================ */
 http.createServer(async (req, res) => {
   const { method, url, headers } = req;
 
-  /* 🚑 RAILWAY HEALTHCHECK */
+  /* 🚑 HEALTHCHECK */
   if (method === "GET" && (url === "/" || url === "/health")) {
     res.writeHead(200, { "Content-Type": "text/plain" });
     return res.end("OK");
   }
 
-  /* ✅ PROXY .account KE CSS (NO AUDIT) */
+  /* ✅ PROXY .account LANGSUNG */
   if (url.startsWith("/.account")) {
     const proxy = http.request(
       {
@@ -90,11 +146,7 @@ http.createServer(async (req, res) => {
         port: CSS_PORT,
         path: url,
         method,
-        headers: {
-          ...headers,
-          "x-forwarded-host": headers.host,
-          "x-forwarded-proto": "https"
-        }
+        headers
       },
       pres => {
         res.writeHead(pres.statusCode, pres.headers);
@@ -106,7 +158,7 @@ http.createServer(async (req, res) => {
   }
 
   /* ===============================
-     NORMAL SOLID REQUEST
+     NORMAL REQUEST
   ============================== */
   const target = new URL(url, `http://localhost:${CSS_PORT}`);
   const pod = detectPod(target.pathname);
@@ -123,11 +175,7 @@ http.createServer(async (req, res) => {
       port: CSS_PORT,
       path: url,
       method,
-      headers: {
-        ...fHeaders,
-        "x-forwarded-host": headers.host,
-        "x-forwarded-proto": "https"
-      }
+      headers: fHeaders
     },
     async pres => {
       let resp = "";
@@ -144,7 +192,13 @@ http.createServer(async (req, res) => {
         !(method === "GET" && isRepeated(headers.authorization, target.pathname));
 
       if (shouldAudit) {
-        // audit logic kamu tetap di sini (tidak aku hapus)
+        await writeAudit({
+          pod,
+          method,
+          rdf: method === "GET" ? resp : body,
+          resource: `${PUBLIC_BASE_URL}${target.pathname}`,
+          pathname: target.pathname
+        });
       }
 
       res.writeHead(pres.statusCode, pres.headers);
