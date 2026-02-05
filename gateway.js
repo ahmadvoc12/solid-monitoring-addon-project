@@ -5,10 +5,16 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 /* ===============================
-   CONFIG
+   CONFIG (🚨 FIXED)
 ================================ */
-const GATEWAY_PORT = 3001;
-const CSS_PORT = 3000;
+// Railway PUBLIC port → Gateway
+const GATEWAY_PORT = process.env.PORT || 3000;
+
+// Internal CSS port (NOT exposed)
+const CSS_PORT = 4000;
+
+// 🚨 DOMAIN PUBLIK RAILWAY (WAJIB BENAR)
+const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app";
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_PATH = "private/audit/access";
@@ -26,7 +32,7 @@ const RESOURCE_SCHEMA = {
 };
 
 /* ===============================
-   FIELD → DPV SCHEMA MAP (🔥 NEW & CRITICAL)
+   FIELD → DPV SCHEMA MAP
 ================================ */
 const FIELD_SCHEMA = {
   "https://schema.org/bloodType": {
@@ -42,7 +48,8 @@ const FIELD_SCHEMA = {
 };
 
 /* ===============================
-   START SOLID CSS
+   START COMMUNITY SOLID SERVER
+   (🚨 BASE URL FIXED)
 ================================ */
 spawn(
   "node",
@@ -51,7 +58,9 @@ spawn(
     "-c", "config/file.json",
     "-f", DATA_ROOT,
     "-p", String(CSS_PORT),
-    "--baseUrl", `http://localhost:${GATEWAY_PORT}`
+
+    // 🚨 HARUS DOMAIN PUBLIK (BUKAN localhost)
+    "--baseUrl", PUBLIC_BASE_URL
   ],
   { stdio: "inherit" }
 );
@@ -129,7 +138,7 @@ async function ensureAuditLog(pod) {
 }
 
 /* ===============================
-   EXTRACT PERSONAL DATA (FIELD-AWARE)
+   EXTRACT PERSONAL DATA
 ================================ */
 function extractPersonalData(rdf, pathname) {
   const result = {
@@ -140,7 +149,6 @@ function extractPersonalData(rdf, pathname) {
     sensitive: false
   };
 
-  /* 1️⃣ RESOURCE-LEVEL */
   const app = extractAppName(pathname);
   const resourceSchema = RESOURCE_SCHEMA[app];
 
@@ -152,48 +160,40 @@ function extractPersonalData(rdf, pathname) {
 
   if (!rdf || typeof rdf !== "string") return result;
 
-  /* 2️⃣ PREFIXED predicate */
-  rdf.match(/([a-zA-Z0-9:_-]+)\s+"([^"]+)"/g)
-    ?.forEach(m => {
-      const [, field, value] = m.match(/(.+?)\s+"(.+)"/);
+  rdf.match(/([a-zA-Z0-9:_-]+)\s+"([^"]+)"/g)?.forEach(m => {
+    const [, field, value] = m.match(/(.+?)\s+"(.+)"/);
+    if (field.startsWith("dc:") || field.startsWith("dct:")) return;
 
-      if (field.startsWith("dc:") || field.startsWith("dct:")) return;
+    result.fields.push(field);
+    result.values.push(value);
 
-      result.fields.push(field);
-      result.values.push(value);
+    const fschema = FIELD_SCHEMA[field];
+    if (fschema) {
+      result.personalData.push(fschema.personal);
+      result.dataCategories.push(fschema.category);
+      result.sensitive = true;
+    }
+  });
 
-      // 🔥 FIELD-LEVEL SENSITIVITY ESCALATION
-      const fschema = FIELD_SCHEMA[field];
-      if (fschema) {
-        result.personalData.push(fschema.personal);
-        result.dataCategories.push(fschema.category);
-        result.sensitive = true;
-      }
-    });
+  rdf.match(/<https?:\/\/[^>]+>\s+"([^"]+)"/g)?.forEach(m => {
+    const [, iri, value] = m.match(/<(https?:\/\/[^>]+)>\s+"([^"]+)"/);
 
-  /* 3️⃣ FULL IRI predicate */
-  rdf.match(/<https?:\/\/[^>]+>\s+"([^"]+)"/g)
-    ?.forEach(m => {
-      const [, iri, value] =
-        m.match(/<(https?:\/\/[^>]+)>\s+"([^"]+)"/);
+    result.fields.push(iri);
+    result.values.push(value);
 
-      result.fields.push(iri);
-      result.values.push(value);
-
-      // 🔥 FIELD-LEVEL SENSITIVITY ESCALATION
-      const fschema = FIELD_SCHEMA[iri];
-      if (fschema) {
-        result.personalData.push(fschema.personal);
-        result.dataCategories.push(fschema.category);
-        result.sensitive = true;
-      }
-    });
+    const fschema = FIELD_SCHEMA[iri];
+    if (fschema) {
+      result.personalData.push(fschema.personal);
+      result.dataCategories.push(fschema.category);
+      result.sensitive = true;
+    }
+  });
 
   return result;
 }
 
 /* ===============================
-   AUDIT WRITER (FINAL)
+   AUDIT WRITER
 ================================ */
 async function writeAudit({ pod, method, rdf, resource, pathname }) {
   if (!pod) return;
@@ -213,13 +213,8 @@ ex:${id}
   ex:accessedByApp "${appName}" ;
 `;
 
-  parsed.personalData.forEach(p =>
-    ttl += `  dpv:hasPersonalData ${p} ;\n`
-  );
-
-  parsed.dataCategories.forEach(c =>
-    ttl += `  dpv:hasDataCategory ${c} ;\n`
-  );
+  parsed.personalData.forEach(p => ttl += `  dpv:hasPersonalData ${p} ;\n`);
+  parsed.dataCategories.forEach(c => ttl += `  dpv:hasDataCategory ${c} ;\n`);
 
   parsed.fields.forEach((f, i) => {
     ttl += `  ex:hasDataField "${f}" ;\n`;
@@ -232,15 +227,11 @@ ex:${id}
 
   await fs.appendFile(logFile, ttl);
 
-  console.log(
-    "🧾 AUDIT →",
-    appName,
-    parsed.sensitive ? "🔴 SENSITIVE" : "🟢 NORMAL"
-  );
+  console.log("🧾 AUDIT →", appName, parsed.sensitive ? "🔴 SENSITIVE" : "🟢 NORMAL");
 }
 
 /* ===============================
-   GATEWAY SERVER
+   GATEWAY SERVER (REVERSE PROXY)
 ================================ */
 http.createServer(async (req, res) => {
   const { method, url, headers } = req;
@@ -256,7 +247,13 @@ http.createServer(async (req, res) => {
       port: CSS_PORT,
       path: url,
       method,
-      headers
+      headers: {
+        ...headers,
+
+        // 🚨 Forwarded headers (WAJIB UNTUK CSS)
+        "x-forwarded-host": headers.host,
+        "x-forwarded-proto": "https"
+      }
     },
     async pres => {
       let resp = "";
@@ -277,7 +274,7 @@ http.createServer(async (req, res) => {
           pod,
           method,
           rdf: method === "GET" ? resp : body,
-          resource: `http://localhost:${GATEWAY_PORT}${target.pathname}`,
+          resource: `${PUBLIC_BASE_URL}${target.pathname}`,
           pathname: target.pathname
         });
       }
@@ -289,6 +286,7 @@ http.createServer(async (req, res) => {
 
   if (body) proxy.write(body);
   proxy.end();
+
 }).listen(GATEWAY_PORT, () => {
-  console.log(`✅ Solid Gateway @ http://localhost:${GATEWAY_PORT}`);
+  console.log(`✅ Solid Gateway running on port ${GATEWAY_PORT}`);
 });
