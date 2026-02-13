@@ -8,7 +8,7 @@ import { spawn } from "child_process";
 import { ODRLPolicyEngine } from './odrl/policy-engine.js';
 import { EvaluationRequestBuilder } from './odrl/request-builder.js';
 import { StateOfTheWorldProvider } from './odrl/context-provider.js';
-import { ComplianceReporter } from './odrl/compliance-reporter.js';
+import { ComplianceReporter } from './odrl/compliance-reporter.mjs';
 import { getAccessCounter } from './odrl/access-counter.js';
 
 /* ===============================
