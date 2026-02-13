@@ -15,7 +15,7 @@
  * CQS10. Has a financial payment been made?
  */
 
-import { getAccessCounter } from './access-counter.js';
+import { getAccessCounter } from './access-counter.mjs';
 
 export class StateOfTheWorldProvider {
   constructor(dataRoot) {
