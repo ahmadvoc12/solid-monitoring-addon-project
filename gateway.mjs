@@ -5,11 +5,11 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 // ODRL Components
-import { ODRLPolicyEngine } from './odrl/policy-engine.js';
-import { EvaluationRequestBuilder } from './odrl/request-builder.js';
-import { StateOfTheWorldProvider } from './odrl/context-provider.js';
-import { ComplianceReporter } from './odrl/compliance-reporter.js';
-import { getAccessCounter } from './odrl/access-counter.js';
+import { ODRLPolicyEngine } from './odrl/policy-engine.mjs';
+import { EvaluationRequestBuilder } from './odrl/request-builder.mjs';
+import { StateOfTheWorldProvider } from './odrl/context-provider.mjs';
+import { ComplianceReporter } from './odrl/compliance-reporter.mjs';
+import { getAccessCounter } from './odrl/access-counter.mjs';
 
 /* ===============================
    CONFIG
