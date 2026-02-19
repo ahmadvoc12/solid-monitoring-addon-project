@@ -12,13 +12,11 @@ import { ComplianceReporter } from './odrl/compliance-reporter.mjs';
 import { getAccessCounter } from './odrl/access-counter.mjs';
 
 /* ===============================
-   CONFIG
-   ✅ FIX: Gunakan localhost untuk GATEWAY_BASE (match client), 127.0.0.1 untuk proxy
+   CONFIG (SESUAI RAILWAY)
 ================================ */
-const GATEWAY_PORT = 3001;
-const CSS_PORT = 3000;
-const GATEWAY_BASE = `http://localhost:${GATEWAY_PORT}`;  // ✅ Match client requests
-const CSS_BASE = `http://localhost:${CSS_PORT}`;
+const GATEWAY_PORT = 3000;           // SESUAI RAILWAY
+const CSS_PORT = 4000;               // INTERNAL
+const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app".trim(); // Trim trailing spaces
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_ACCESS_PATH = "private/audit/access";
