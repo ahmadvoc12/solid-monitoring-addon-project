@@ -13,10 +13,14 @@ import { getAccessCounter } from './odrl/access-counter.mjs';
 
 /* ===============================
    CONFIG (SESUAI RAILWAY)
+   ✅ FIX: Definisikan GATEWAY_BASE (sebelumnya hanya PUBLIC_BASE_URL)
 ================================ */
-const GATEWAY_PORT = 3000;           // SESUAI RAILWAY
-const CSS_PORT = 4000;               // INTERNAL
-const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app".trim(); // Trim trailing spaces
+const GATEWAY_PORT = 3000;           // ✅ SESUAI RAILWAY
+const CSS_PORT = 4000;               // ✅ INTERNAL CSS PORT
+const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app"; // ✅ Trim trailing spaces
+
+// ✅ FIX: GATEWAY_BASE harus didefinisikan untuk spawn CSS server
+const GATEWAY_BASE = PUBLIC_BASE_URL;  // ✅ Sekarang terdefinisi!
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_ACCESS_PATH = "private/audit/access";
@@ -439,7 +443,7 @@ function isValidPodName(podName) {
 }
 
 function buildPodBaseUrl(podName) {
-  return new URL(`/${podName}/`, GATEWAY_BASE).href;
+  return new URL(`/${podName}/`, GATEWAY_BASE).href;  // ✅ Sekarang GATEWAY_BASE terdefinisi
 }
 
 async function ensurePolicyDeployed(podName, authToken) {
@@ -486,6 +490,7 @@ async function ensurePolicyDeployed(podName, authToken) {
 
 /* ===============================
    START SOLID CSS
+   ✅ FIX: Gunakan GATEWAY_BASE yang sudah didefinisikan
 ================================ */
 spawn(
   "node",
@@ -494,7 +499,7 @@ spawn(
     "-c", "config/file.json",
     "-f", DATA_ROOT,
     "-p", String(CSS_PORT),
-    "--baseUrl", GATEWAY_BASE
+    "--baseUrl", GATEWAY_BASE  // ✅ Sekarang GATEWAY_BASE sudah terdefinisi!
   ],
   { stdio: "inherit" }
 );
@@ -788,9 +793,9 @@ http.createServer(async (req, res) => {
     await ensurePolicyDeployed(pod, headers.authorization);
   }
 
-  // ✅ Proxy ke CSS - gunakan 127.0.0.1 untuk hindari DNS error
+  // ✅ Proxy ke CSS - untuk Railway, gunakan localhost karena CSS berjalan di container yang sama
   const proxy = http.request({
-    hostname: "127.0.0.1",  // ✅ FIX: IP langsung untuk hindari ENOTFOUND
+    hostname: "127.0.0.1",  // ✅ CSS berjalan di localhost:4000 dalam container yang sama
     port: CSS_PORT,
     path: url,
     method,
