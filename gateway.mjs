@@ -13,10 +13,14 @@ import { getAccessCounter } from './odrl/access-counter.mjs';
 
 /* ===============================
    CONFIG (SESUAI RAILWAY)
+   ✅ FIX: Definisikan GATEWAY_BASE (sebelumnya hanya PUBLIC_BASE_URL)
 ================================ */
-const GATEWAY_PORT = 3000;           // SESUAI RAILWAY
-const CSS_PORT = 4000;               // INTERNAL
-const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app".trim(); // Trim trailing spaces
+const GATEWAY_PORT = 3000;           // ✅ SESUAI RAILWAY
+const CSS_PORT = 4000;               // ✅ INTERNAL CSS PORT
+const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app"; // ✅ Trim trailing spaces
+
+// ✅ FIX: GATEWAY_BASE harus didefinisikan untuk spawn CSS server
+const GATEWAY_BASE = PUBLIC_BASE_URL;  // ✅ Gunakan PUBLIC_BASE_URL yang sudah di-trim
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_ACCESS_PATH = "private/audit/access";
@@ -486,6 +490,7 @@ async function ensurePolicyDeployed(podName, authToken) {
 
 /* ===============================
    START SOLID CSS
+   ✅ FIX: Gunakan GATEWAY_BASE yang sudah didefinisikan
 ================================ */
 spawn(
   "node",
@@ -494,7 +499,7 @@ spawn(
     "-c", "config/file.json",
     "-f", DATA_ROOT,
     "-p", String(CSS_PORT),
-    "--baseUrl", GATEWAY_BASE
+    "--baseUrl", GATEWAY_BASE  // ✅ Sekarang GATEWAY_BASE sudah terdefinisi!
   ],
   { stdio: "inherit" }
 );
@@ -602,12 +607,10 @@ async function ensureSotWFile(pod) {
 
 /* ===============================
    ✅ WRITE ACCESS LOG - RESTORE DETAILED LOGGING
-   ✅ Menampilkan data sensitif & non-sensitif yang diakses
 ================================ */
 async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields, 
   violationType = null, personalData = null, method = "GET", resource = "" }) {
   
-  // ✅ Log semua akses yang mengandung sensitive fields ATAU violation
   if (sensitiveFields.length === 0 && decision.permitted) return;
   
   const logFile = await ensureAccessLogFile(pod);
@@ -616,7 +619,6 @@ async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields,
   const app = evalRequest?.appName || resource.split('/').filter(Boolean)[2] || "unknown";
   const decisionStr = decision.permitted ? "ALLOWED" : "VIOLATION";
   
-  // ✅ TTL log dengan detail lengkap
   let ttl = `
 # Individual access record
 ex:${accessId} a <http://www.w3.org/ns/prov#Activity> ;
@@ -624,12 +626,10 @@ ex:${accessId} a <http://www.w3.org/ns/prov#Activity> ;
     <http://www.w3.org/ns/prov#wasAssociatedWith> ex:${app} ;
     <https://w3id.org/force/compliance-report#decision> "${decisionStr}" .\n`;
   
-  // ✅ Tambahkan violation details jika ada
   if (!decision.permitted && violationType) {
     ttl += `ex:${accessId} <https://w3id.org/force/compliance-report#violationType> "${violationType}" .\n`;
   }
   
-  // ✅ Tambahkan DPV personal data handling jika ada data sensitif
   if (personalData && personalData.sensitive) {
     const dpvId = `log-${Date.now()}`;
     ttl += `
@@ -642,7 +642,6 @@ ${dpvId} a <https://w3id.org/dpv#PersonalDataHandling> ;
     <https://w3id.org/force/compliance-report#sensitiveFieldCount> "${personalData.sensitiveFields.length}"^^<http://www.w3.org/2001/XMLSchema#integer> ;
     <https://w3id.org/force/compliance-report#nonSensitiveFieldCount> "${personalData.nonSensitiveFields.length}"^^<http://www.w3.org/2001/XMLSchema#integer> .\n`;
     
-    // ✅ Log setiap field yang diakses
     personalData.fields.forEach((f, i) => {
       const isSensitive = personalData.sensitiveFields.includes(f);
       ttl += `${dpvId} <https://w3id.org/force/compliance-report#hasDataField> "${f}" ;\n`;
@@ -653,13 +652,11 @@ ${dpvId} a <https://w3id.org/dpv#PersonalDataHandling> ;
   
   await fs.appendFile(logFile, ttl);
   
-  // ✅ Console log dengan detail lengkap (restore logging sebelumnya)
   const status = decision.permitted ? "✅ ACCESS ALLOWED" : "⚠️ POLICY VIOLATION (allowed)";
   const fields = sensitiveFields.length > 0 ? sensitiveFields.join(', ') : 'none';
   
   console.log(`${status} | App: ${app} | Fields: ${fields} | Reason: ${decision.reason}`);
   
-  // ✅ RESTORE: Tampilkan detail data sensitif & non-sensitif
   if (personalData) {
     console.log(`   📊 Data: ${personalData.sensitiveFields.length} sensitif, ${personalData.nonSensitiveFields.length} non-sensitif`);
     if (personalData.sensitiveFields.length > 0) {
@@ -703,7 +700,6 @@ async function buildSotWWithCount(pod, evalRequest, pathname, sensitiveFields) {
    🔥 INCREMENT COUNT BEFORE EVALUATION (VIOLATION DETECTION)
 ================================ */
 async function incrementAndEvaluate(pod, app, sensitiveFields, evalRequest, pathname) {
-  // STEP 1: Increment count DULU
   for (const fld of sensitiveFields) {
     const normalizedField = normalizeField(fld);
     if (SENSITIVE_FIELDS[normalizedField]) {
@@ -715,14 +711,12 @@ async function incrementAndEvaluate(pod, app, sensitiveFields, evalRequest, path
     }
   }
   
-  // STEP 2: BARU evaluate dengan count terbaru
   const sotw = await buildSotWWithCount(pod, evalRequest, pathname, sensitiveFields);
   return policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
 }
 
 /* ===============================
    GATEWAY SERVER (MONITORING MODE)
-   ✅ TRUE MONITORING: Proxy dulu, evaluasi belakangan (TIDAK BLOCKING)
 ================================ */
 http.createServer(async (req, res) => {
   const { method, url, headers } = req;
@@ -737,33 +731,28 @@ http.createServer(async (req, res) => {
   let body = "";
   for await (const c of req) body += c;
 
-  // 🔐 DEPLOY POLICY (fire-and-forget, tidak blocking)
   if (isAuthenticated(headers) && pod && isValidPodName(pod) && !deployedPods.has(pod)) {
     await ensurePolicyDeployed(pod, headers.authorization);
   }
 
-  // ✅ Proxy ke CSS (SELALU DILAKUKAN - tidak ada blocking)
-  // ✅ FIX: Gunakan 127.0.0.1 untuk koneksi proxy (hindari DNS error)
+  // ✅ Proxy ke CSS - untuk Railway, gunakan localhost karena CSS berjalan di container yang sama
   const proxy = http.request({
-    hostname: "127.0.0.1",  // ✅ FIX: IP langsung untuk hindari ENOTFOUND
+    hostname: "127.0.0.1",  // ✅ CSS berjalan di localhost:4000 dalam container yang sama
     port: CSS_PORT,
-    path: url,  // ✅ Path asli dari client (localhost:3001/...)
+    path: url,
     method,
-    headers: { ...headers }  // ✅ Forward headers asli
+    headers: { ...headers }
   }, async pres => {
     let resp = "";
     for await (const c of pres) resp += c;
 
-    // 🔐 ODRL EVALUATION untuk GET response (POST-PROXY, tidak blocking)
     if (method === "GET" && isAuthenticated(headers) && !isSystem(target.pathname)) {
       try {
         const sensitiveFields = extractSensitiveFields(resp);
         
-        // ✅ HANYA evaluasi jika ada sensitive fields
         if (sensitiveFields.length > 0) {
           const evalRequest = requestBuilder.buildFromHttpRequest(req, target.pathname, pod);
           
-          // 🔥 STEP 1: Increment count DULU
           for (const fld of sensitiveFields) {
             const normalizedField = normalizeField(fld);
             if (SENSITIVE_FIELDS[normalizedField]) {
@@ -775,7 +764,6 @@ http.createServer(async (req, res) => {
             }
           }
           
-          // 🔥 STEP 2: BARU evaluate dengan count terbaru
           const sotw = await buildSotWWithCount(pod, evalRequest, target.pathname, sensitiveFields);
           const decisionResult = policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
           
@@ -795,12 +783,10 @@ http.createServer(async (req, res) => {
       }
     }
     
-    // ✅ SELALU kirim response ke client (monitoring mode)
     res.writeHead(pres.statusCode, pres.headers);
     res.end(resp);
   });
 
-  // ✅ FIX: Error handling untuk proxy connection
   proxy.on('error', (err) => {
     console.error('❌ Proxy error:', err.message);
     if (!res.headersSent) {
