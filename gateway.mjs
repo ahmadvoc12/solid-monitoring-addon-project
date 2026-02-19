@@ -19,15 +19,20 @@ const CSS_PORT = 4000;               // INTERNAL
 const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app".trim(); // Trim trailing spaces
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
-const AUDIT_ACCESS_PATH = "private/audit/access";      // Access log (PROV + report)
-const AUDIT_MONITORING_PATH = "private/audit/monitoring"; // State of the World
+const AUDIT_ACCESS_PATH = "private/audit/access";
+const AUDIT_MONITORING_PATH = "private/audit/monitoring";
 const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+// ✅ FIX: Policy location sama dengan access-log.ttl
+const POLICY_PATH = "private/audit/access/monitor-policy.ttl";
+const POLICY_ACL_PATH = "private/audit/access/monitor-policy.ttl.acl";
 
 /* ===============================
    SENSITIVE FIELD CONFIGURATION
+   ✅ FIX: HAPUS SEMUA trailing spaces di IRI keys (KRUSIAL untuk matching!)
 ================================ */
 const SENSITIVE_FIELDS = {
-  "<https://schema.org/bloodType>": {
+  "<https://schema.org/bloodType>": {  // ✅ Tanpa trailing space
     asset: "ex:blood-type",
     label: "Blood Type",
     protectedByPolicy: "bloodTypeAccess",
@@ -38,12 +43,18 @@ const SENSITIVE_FIELDS = {
 };
 
 const NON_SENSITIVE_FIELDS = {
-  "<http://purl.org/dc/terms/created>": { label: "Created Timestamp", sensitive: false },
-  "<https://schema.org/identifier>": { label: "Identifier", sensitive: false }
+  "<http://purl.org/dc/terms/created>": {
+    label: "Created Timestamp",
+    sensitive: false
+  },
+  "<https://schema.org/identifier>": {  // ✅ Tanpa trailing space
+    label: "Identifier",
+    sensitive: false
+  }
 };
 
 /* ===============================
-   ✅ FIELD NORMALIZATION (FIXED)
+   ✅ FIELD NORMALIZATION
 ================================ */
 function normalizeField(field) {
   if (!field) return field;
@@ -69,14 +80,11 @@ function shouldCountRequest(pod, app, field, timestamp) {
     console.log(`ℹ️ Skipping duplicate request: ${normalizedField}`);
     return false;
   }
-  
   requestCache.set(key, Date.now());
-  
   const now = Date.now();
   for (const [k, time] of requestCache.entries()) {
     if (now - time > 10000) requestCache.delete(k);
   }
-  
   return true;
 }
 
@@ -90,56 +98,394 @@ const complianceReporter = new ComplianceReporter();
 const accessCounter = getAccessCounter(DATA_ROOT);
 
 /* ===============================
-   LOAD ODRL POLICIES
+   📄 POLICY TTL CONTENT (INLINE)
+   ✅ FIX: HAPUS SEMUA trailing spaces di IRI values
 ================================ */
-async function loadPolicies() {
+const MONITOR_POLICY_TTL = `@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
+@prefix dpv: <https://w3id.org/dpv#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <https://example.org/> .
+
+ex:policy-blood-type a odrl:Policy ;
+    odrl:uid <https://pod.example/policies/blood-type-policy> ;
+    dct:created "2026-02-13T09:00:00Z"^^xsd:dateTime ;
+    dct:creator ex:pod-owner ;
+    odrl:profile <https://w3id.org/dpv/odrl> ;
+    odrl:target ex:blood-type ;
+    odrl:permission [
+        odrl:assigner ex:pod-owner ;
+        odrl:assignee ex:any-app ;
+        odrl:action odrl:read ;
+        odrl:constraint [
+            odrl:leftOperand odrl:count ;
+            odrl:operator odrl:lteq ;
+            odrl:rightOperand "1"^^xsd:integer
+        ]
+    ] ;
+    odrl:prohibition [
+        odrl:action odrl:distribute ;
+        odrl:assignee ex:any-app
+    ] .
+`;
+
+/* ===============================
+   🔐 ACL CONTENT FOR POLICY FILE (INLINE)
+================================ */
+function getPolicyACLContent(podBaseUrl) {
+  return `@prefix acl: <http://www.w3.org/ns/auth/acl#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+
+<#owner>
+    a acl:Authorization ;
+    acl:agent <${podBaseUrl}profile/card#me> ;
+    acl:accessTo <monitor-policy.ttl> ;
+    acl:mode acl:Read, acl:Write, acl:Control .
+
+<#authenticated-read>
+    a acl:Authorization ;
+    acl:agentClass foaf:AuthenticatedAgent ;
+    acl:accessTo <monitor-policy.ttl> ;
+    acl:mode acl:Read .
+`;
+}
+
+/* ===============================
+   ✅ FIX: Helper fetch dengan timeout + AbortController
+================================ */
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  
   try {
-    const policies = {
-      bloodTypeAccess: {
-        uid: "ex:policy-blood-type",
-        permission: {
-          action: "odrl:read",
-          constraint: {
-            leftOperand: "odrl:count",
-            operator: "odrl:lteq",
-            rightOperand: 3
-          },
-          targetAsset: "ex:blood-type"
-        },
-        prohibition: {
-          action: "odrl:distribute"
-        }
-      }
-    };
-    
-    policyEngine.loadPolicies(policies);
-    console.log('✅ ODRL Policies loaded (Monitoring Mode)');
-    console.log(`   • Blood Type Access: Max 3 accesses`);
-    console.log(`   • Mode: MONITORING (violations logged but NOT blocked)`);
-    console.log(`   • Base URL: ${PUBLIC_BASE_URL}`);
-    
-  } catch (error) {
-    console.error('❌ Failed to load policies:', error);
-    const fallbackPolicies = {
-      bloodTypeAccess: {
-        uid: "ex:policy-blood-type",
-        permission: {
-          action: "odrl:read",
-          constraint: {
-            leftOperand: "odrl:count",
-            operator: "odrl:lteq",
-            rightOperand: 3
-          },
-          targetAsset: "ex:blood-type"
-        }
-      }
-    };
-    policyEngine.loadPolicies(fallbackPolicies);
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    return res;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 /* ===============================
-   START SOLID CSS (SESUAI RAILWAY CONFIG)
+   ✅ CREATE POLICY FILE LOCALLY (fallback)
+================================ */
+async function savePolicyLocally(podName, policyContent) {
+  const policyDir = path.join(DATA_ROOT, podName, AUDIT_ACCESS_PATH);
+  const policyFile = path.join(policyDir, 'monitor-policy.ttl');
+  
+  await fs.mkdir(policyDir, { recursive: true });
+  
+  try {
+    await fs.access(policyFile);
+    console.log(`✅ Local policy already exists: ${policyFile}`);
+    return false;
+  } catch {
+    await fs.writeFile(policyFile, policyContent);
+    console.log(`🎯 Local policy saved: ${policyFile}`);
+    return true;
+  }
+}
+
+/* ===============================
+   ✅ CREATE ACL FILE LOCALLY (untuk fallback)
+================================ */
+async function createPolicyACLLocal(podName, podBaseUrl) {
+  const aclDir = path.join(DATA_ROOT, podName, AUDIT_ACCESS_PATH);
+  const aclFile = path.join(aclDir, 'monitor-policy.ttl.acl');
+  
+  await fs.mkdir(aclDir, { recursive: true });
+  
+  const aclContent = getPolicyACLContent(podBaseUrl);
+
+  try {
+    await fs.access(aclFile);
+    console.log(`✅ Local ACL already exists: ${aclFile}`);
+    return false;
+  } catch {
+    await fs.writeFile(aclFile, aclContent);
+    console.log(`🎯 Local ACL saved: ${aclFile}`);
+    return true;
+  }
+}
+
+/* ===============================
+   ✅ CREATE ACL REMOTELY (untuk pod)
+================================ */
+async function createPolicyACLRemote(podBaseUrl, authToken) {
+  try { 
+    new URL(podBaseUrl); 
+  } catch (e) {
+    console.warn(`⚠️ Invalid podBaseUrl for ACL: ${podBaseUrl}`);
+    return false;
+  }
+  if (!podBaseUrl.endsWith('/')) podBaseUrl += '/';
+  
+  const aclUrl = new URL(POLICY_PATH + '.acl', podBaseUrl).href;
+  const aclContent = getPolicyACLContent(podBaseUrl);
+
+  try {
+    const res = await fetchWithTimeout(aclUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': authToken,
+        'Content-Type': 'text/turtle'
+      },
+      body: aclContent
+    }, 3000);
+    
+    if (res.ok || res.status === 201 || res.status === 409) {
+      console.log(`✅ ACL created/confirmed for policy: ${aclUrl}`);
+      return true;
+    }
+    console.warn(`⚠️ ACL creation returned ${res.status} (continuing)`);
+    return false;
+  } catch (error) {
+    console.warn(`⚠️ Could not create remote ACL (continuing): ${error.message}`);
+    return false;
+  }
+}
+
+/* ===============================
+   ✅ DEPLOY POLICY TO POD (INLINE)
+================================ */
+async function deployPolicyToPod(podBaseUrl, authToken) {
+  try { 
+    new URL(podBaseUrl); 
+  } catch (e) {
+    throw new Error(`Invalid podBaseUrl: "${podBaseUrl}"`);
+  }
+  if (!podBaseUrl.endsWith('/')) podBaseUrl += '/';
+  
+  console.log(`🔍 Deploying policy to pod: ${podBaseUrl}`);
+  
+  const policyUrl = new URL(POLICY_PATH, podBaseUrl).href;
+  console.log(`📄 Policy URL: ${policyUrl}`);
+  
+  try {
+    const headRes = await fetchWithTimeout(policyUrl, {
+      method: 'HEAD',
+      headers: { 
+        'Authorization': authToken,
+        'Accept': 'text/turtle'
+      }
+    }, 3000);
+    
+    console.log(`📡 HEAD response: ${headRes.status}`);
+    
+    if (headRes.status === 200 || headRes.status === 204) {
+      console.log(`✅ Policy already exists at ${policyUrl}`);
+      await createPolicyACLRemote(podBaseUrl, authToken);
+      return { deployed: false, url: policyUrl, reason: 'already_exists' };
+    }
+    
+    console.log(`📤 PUT ${policyUrl}`);
+    const putRes = await fetchWithTimeout(policyUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': authToken,
+        'Content-Type': 'text/turtle',
+        'Slug': 'monitor-policy.ttl',
+        'Link': '<http://www.w3.org/ns/ldp#Resource>; rel="type"'
+      },
+      body: MONITOR_POLICY_TTL
+    }, 5000);
+    
+    console.log(`📥 PUT response: ${putRes.status}`);
+    
+    if (!putRes.ok) {
+      const errText = await putRes.text().catch(() => 'No error body');
+      console.error(`❌ PUT failed: ${putRes.status} - ${errText}`);
+      throw new Error(`Failed to deploy policy: ${putRes.status} ${errText}`);
+    }
+    
+    await createPolicyACLRemote(podBaseUrl, authToken);
+    
+    console.log(`✅ Policy deployed successfully to ${policyUrl}`);
+    return { deployed: true, url: policyUrl, status: putRes.status };
+    
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.error(`❌ Fetch timeout deploying policy to ${policyUrl}`);
+    } else {
+      console.error(`❌ Error deploying policy to pod:`, error.message);
+    }
+    throw error;
+  }
+}
+
+/* ===============================
+   ✅ LOAD POLICY FROM POD (INLINE)
+================================ */
+async function loadPolicyFromPod(podBaseUrl, authToken) {
+  try { 
+    new URL(podBaseUrl); 
+  } catch (e) {
+    throw new Error(`Invalid podBaseUrl: "${podBaseUrl}"`);
+  }
+  
+  const policyUrl = new URL(POLICY_PATH, podBaseUrl).href;
+  
+  try {
+    const res = await fetchWithTimeout(policyUrl, {
+      headers: { 
+        'Authorization': authToken,
+        'Accept': 'text/turtle' 
+      }
+    }, 3000);
+    
+    if (!res.ok) {
+      throw new Error(`Failed to fetch policy: ${res.status}`);
+    }
+    
+    const ttlContent = await res.text();
+    console.log(`✅ Policy loaded from pod: ${policyUrl}`);
+    return ttlContent;
+    
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.error(`❌ Fetch timeout loading policy from ${policyUrl}`);
+    } else {
+      console.error(`❌ Error loading policy from pod:`, error.message);
+    }
+    throw error;
+  }
+}
+
+/* ===============================
+   ✅ PARSE CONSTRAINT FROM TTL
+================================ */
+function parseConstraintFromTTL(ttlContent) {
+  try {
+    const countMatch = ttlContent.match(/odrl:leftOperand\s+odrl:count[^;]+odrl:rightOperand\s+"?(\d+)"?/);
+    if (countMatch && countMatch[1]) {
+      const maxCount = parseInt(countMatch[1], 10);
+      console.log(`✅ Parsed dynamic constraint: max ${maxCount} accesses`);
+      return maxCount;
+    }
+    return 3;
+  } catch {
+    return 3;
+  }
+}
+
+/* ===============================
+   🔥 PARSE CONSTRAINT DYNAMICALLY FROM policy file
+================================ */
+async function parseConstraintFromPolicy(podName) {
+  const policyFile = path.join(DATA_ROOT, podName, POLICY_PATH);
+
+  try {
+    const content = await fs.readFile(policyFile, 'utf-8');
+
+    const match = content.match(
+      /odrl:leftOperand\s+odrl:count[\s\S]*?odrl:rightOperand\s+"(\d+)"\^\^xsd:integer/
+    );
+
+    if (match && match[1]) {
+      const maxCount = parseInt(match[1], 10);
+      console.log(`✅ Dynamic constraint parsed: max ${maxCount} accesses`);
+      return maxCount;
+    }
+
+    console.warn("⚠️ No constraint found in policy, using default = 3");
+    return 3;
+
+  } catch (err) {
+    console.warn("⚠️ Could not read policy file, using default = 3");
+    return 3;
+  }
+}
+
+/* ===============================
+   🔄 LOAD POLICIES (Dynamic constraint)
+================================ */
+async function loadPolicies(podName = null) {
+  let maxCount = 3;
+  if (podName) maxCount = await parseConstraintFromPolicy(podName);
+  
+  const policies = {
+    bloodTypeAccess: {
+      uid: "ex:policy-blood-type",
+      permission: {
+        action: "odrl:read",
+        constraint: {
+          leftOperand: "odrl:count",
+          operator: "odrl:lteq",
+          rightOperand: maxCount
+        },
+        targetAsset: "ex:blood-type"
+      },
+      prohibition: { action: "odrl:distribute" }
+    }
+  };
+  
+  policyEngine.loadPolicies(policies);
+  console.log(`✅ ODRL Policies loaded (constraint: max ${maxCount} accesses)`);
+  return maxCount;
+}
+
+/* ===============================
+   🚀 DEPLOY POLICY (Fire-and-forget - TIDAK BLOCKING)
+================================ */
+const deployedPods = new Set();
+const deployingPods = new Set();
+
+function isValidPodName(podName) {
+  if (!podName) return false;
+  if (['.oidc', '.well-known', '.acl', 'private', 'public'].includes(podName)) return false;
+  return /^[a-z0-9][a-z0-9-]{2,}$/.test(podName);
+}
+
+function buildPodBaseUrl(podName) {
+  return new URL(`/${podName}/`, GATEWAY_BASE).href;
+}
+
+async function ensurePolicyDeployed(podName, authToken) {
+  if (!isValidPodName(podName)) return false;
+  if (deployedPods.has(podName)) return true;
+  
+  if (deployingPods.has(podName)) {
+    return true;
+  }
+  
+  deployingPods.add(podName);
+  
+  (async () => {
+    try {
+      const podBaseUrl = buildPodBaseUrl(podName);
+      
+      let formattedAuth = authToken;
+      if (authToken && !authToken.startsWith('DPoP ')) {
+        formattedAuth = `DPoP ${authToken}`;
+      }
+      
+      const result = await deployPolicyToPod(podBaseUrl, formattedAuth);
+      if (result?.deployed) {
+        console.log(`🎯 Policy deployed to ${podBaseUrl}${POLICY_PATH}`);
+        await loadPolicies(podName);
+      }
+    } catch (error) {
+      console.log(`🔄 Remote deploy failed, using local fallback for ${podName}`);
+      
+      await savePolicyLocally(podName, MONITOR_POLICY_TTL);
+      
+      const podBaseUrl = buildPodBaseUrl(podName);
+      await createPolicyACLLocal(podName, podBaseUrl);
+      
+      await loadPolicies(podName);
+    } finally {
+      deployingPods.delete(podName);
+      deployedPods.add(podName);
+    }
+  })();
+  
+  return true;
+}
+
+/* ===============================
+   START SOLID CSS
 ================================ */
 spawn(
   "node",
@@ -148,7 +494,7 @@ spawn(
     "-c", "config/file.json",
     "-f", DATA_ROOT,
     "-p", String(CSS_PORT),
-    "--baseUrl", PUBLIC_BASE_URL  // SESUAI RAILWAY
+    "--baseUrl", GATEWAY_BASE
   ],
   { stdio: "inherit" }
 );
@@ -167,7 +513,6 @@ const extractAppName = pathname => {
    REQUEST FILTERS
 ================================ */
 const isAuthenticated = h => !!h.authorization;
-const isProfile = p => p.includes("/profile/card");
 const isSystem = p =>
   p.startsWith("/.well-known") ||
   p.startsWith("/.oidc") ||
@@ -175,23 +520,13 @@ const isSystem = p =>
   p.includes("/private/audit/") ||
   p.includes("/private/odrl/");
 
-const isBrowserNav = h =>
-  h["sec-fetch-mode"] === "navigate" ||
-  h["sec-fetch-dest"] === "document";
-
-const isApp = h =>
-  h["sec-fetch-site"] === "cross-site" ||
-  (!!h.authorization && !h["sec-fetch-site"]);
-
 /* ===============================
-   ✅ EXTRACT SENSITIVE FIELDS (FIXED)
+   ✅ EXTRACT SENSITIVE FIELDS
 ================================ */
 function extractSensitiveFields(rdf) {
   if (!rdf || typeof rdf !== "string") return [];
-  
   const sensitiveFields = new Set();
   const fullIRIMatch = rdf.match(/<https?:\/\/[^>]+>\s+"([^"]+)"/g);
-  
   if (fullIRIMatch) {
     fullIRIMatch.forEach(m => {
       const match = m.match(/<(https?:\/\/[^>]+)>\s+"([^"]+)"/);
@@ -207,49 +542,22 @@ function extractSensitiveFields(rdf) {
       }
     });
   }
-  
   return Array.from(sensitiveFields);
 }
 
 /* ===============================
-   ✅ EXTRACT PERSONAL DATA (FIXED)
+   ✅ EXTRACT PERSONAL DATA - RESTORE DETAILED LOGGING
 ================================ */
-function extractPersonalData(rdf, pathname) {
+function extractPersonalData(rdf) {
   const result = {
-    personalData: [],
-    dataCategories: [],
-    fields: [],
-    values: [],
-    sensitive: false,
-    sensitiveFields: [],
-    nonSensitiveFields: []
+    personalData: [], dataCategories: [], fields: [], values: [],
+    sensitive: false, sensitiveFields: [], nonSensitiveFields: []
   };
-
   if (!rdf || typeof rdf !== "string") return result;
 
-  /* PREFIXED predicate */
-  rdf.match(/([a-zA-Z0-9:_-]+)\s+"([^"]+)"/g)?.forEach(m => {
-    const [, field, value] = m.match(/(.+?)\s+"(.+)"/) || [];
-    if (!field || !value || field.startsWith("dc:") || field.startsWith("dct:")) return;
-    
-    result.fields.push(field);
-    result.values.push(value);
-    
-    if (SENSITIVE_FIELDS[field]) {
-      result.personalData.push(SENSITIVE_FIELDS[field].personalData);
-      result.dataCategories.push(SENSITIVE_FIELDS[field].dataCategory);
-      result.sensitive = true;
-      result.sensitiveFields.push(field);
-    } else if (NON_SENSITIVE_FIELDS[field]) {
-      result.nonSensitiveFields.push(field);
-    }
-  });
-
-  /* FULL IRI predicate */
   rdf.match(/<https?:\/\/[^>]+>\s+"([^"]+)"/g)?.forEach(m => {
     const match = m.match(/<(https?:\/\/[^>]+)>\s+"([^"]+)"/);
     if (!match) return;
-    
     const iri = match[1];
     const value = match[2];
     const normalizedIRI = normalizeField(`<${iri}>`);
@@ -266,392 +574,253 @@ function extractPersonalData(rdf, pathname) {
       result.nonSensitiveFields.push(normalizedIRI);
     }
   });
-
   return result;
 }
 
 /* ===============================
-   ACCESS LOG FILE PREP
+   ACCESS LOG & SOTW - RESTORE DETAILED LOGGING
 ================================ */
 async function ensureAccessLogFile(pod) {
   const dir = path.join(DATA_ROOT, pod, AUDIT_ACCESS_PATH);
   const file = path.join(dir, "access-log.ttl");
-
   await fs.mkdir(dir, { recursive: true });
-
-  try {
-    await fs.access(file);
-  } catch {
-    await fs.writeFile(
-      file,
-`@prefix prov: <http://www.w3.org/ns/prov#> .
-@prefix report: <https://w3id.org/force/compliance-report#> .
-@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
-@prefix dpv: <https://w3id.org/dpv#> .
-@prefix ex: <https://example.org/> .
-@prefix dct: <http://purl.org/dc/terms/> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-ex:access-log a prov:Collection ;
-    dct:title "Access Log for ${pod}'s Health Data" .
-
-`
-    );
+  try { await fs.access(file); } catch {
+    await fs.writeFile(file, `@prefix ex: <https://example.org/> .\nex:access-log a <http://www.w3.org/ns/prov#Collection> .\n`);
   }
-
   return file;
 }
 
-/* ===============================
-   ✅ STATE OF THE WORLD FILE PREP (FIXED)
-================================ */
 async function ensureSotWFile(pod) {
   const dir = path.join(DATA_ROOT, pod, AUDIT_MONITORING_PATH);
   const file = path.join(dir, "state-of-world.ttl");
-
   await fs.mkdir(dir, { recursive: true });
-
-  try {
-    await fs.access(file);
-  } catch {
-    await fs.writeFile(
-      file,
-`@prefix : <https://w3id.org/force/sotw#> .
-@prefix ex: <https://example.org/> .
-@prefix dct: <http://purl.org/dc/terms/> .
-@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-
-# This file is continuously updated by monitoring system
-ex:sotw-current a :SotW ;
-    dct:modified "${new Date().toISOString()}"^^xsd:dateTime ;
-    :currentTime "${new Date().toISOString()}"^^xsd:dateTime .
-
-`
-    );
+  try { await fs.access(file); } catch {
+    await fs.writeFile(file, `@prefix ex: <https://example.org/> .\nex:sotw-current a <https://w3id.org/force/sotw#SotW> .\n`);
   }
-
   return file;
 }
 
 /* ===============================
-   ✅ WRITE ACCESS LOG (FIXED)
+   ✅ WRITE ACCESS LOG - RESTORE DETAILED LOGGING
+   ✅ Menampilkan data sensitif & non-sensitif yang diakses
 ================================ */
-async function writeAccessLog({ 
-  pod, evalRequest, decision, sensitiveFields, violationType = null,
-  personalData = null, method = "GET", resource = ""
-}) {
+async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields, 
+  violationType = null, personalData = null, method = "GET", resource = "" }) {
+  
+  // ✅ Log semua akses yang mengandung sensitive fields ATAU violation
   if (sensitiveFields.length === 0 && decision.permitted) return;
-
+  
   const logFile = await ensureAccessLogFile(pod);
   const accessId = `access-${Date.now()}`;
   const timestamp = new Date().toISOString();
-  const app = evalRequest?.appName || "unknown-app";
-  const purposeConstraint = evalRequest?.context?.find(c => c.leftOperand === 'odrl:purpose');
-  const purpose = purposeConstraint?.rightOperand || "dpv:HealthServiceProvision";
+  const app = evalRequest?.appName || resource.split('/').filter(Boolean)[2] || "unknown";
   const decisionStr = decision.permitted ? "ALLOWED" : "VIOLATION";
   
+  // ✅ TTL log dengan detail lengkap
   let ttl = `
 # Individual access record
-ex:${accessId} a prov:Activity ;
-    prov:startedAtTime "${timestamp}"^^xsd:dateTime ;
-    prov:wasAssociatedWith ex:${app} ;
-    prov:used ex:blood-type ;
-    ex:action odrl:read ;
-    ex:purpose ${purpose} ;
-    ex:decision "${decisionStr}" .\n`;
+ex:${accessId} a <http://www.w3.org/ns/prov#Activity> ;
+    <http://www.w3.org/ns/prov#startedAtTime> "${timestamp}"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+    <http://www.w3.org/ns/prov#wasAssociatedWith> ex:${app} ;
+    <https://w3id.org/force/compliance-report#decision> "${decisionStr}" .\n`;
   
+  // ✅ Tambahkan violation details jika ada
   if (!decision.permitted && violationType) {
-    ttl += `ex:${accessId} ex:violationType "${violationType}" .\n`;
+    ttl += `ex:${accessId} <https://w3id.org/force/compliance-report#violationType> "${violationType}" .\n`;
   }
   
-  const reportId = `report-${Date.now()}`;
-  ttl += `
-ex:${reportId} a report:PolicyReport ;
-    dct:created "${timestamp}"^^xsd:dateTime ;
-    report:policy ex:policy-blood-type ;
-    report:ruleReport ex:rule-report-${reportId} .
-
-ex:rule-report-${reportId} a report:RuleReport ;
-    report:rule ex:permission-blood-type ;
-    report:activationState report:Active ;
-    report:performanceState report:Performed ;
-    report:deonticState ${decision.permitted ? "report:Fulfilled" : "report:Violated"} .\n`;
-  
+  // ✅ Tambahkan DPV personal data handling jika ada data sensitif
   if (personalData && personalData.sensitive) {
     const dpvId = `log-${Date.now()}`;
-    ttl += `\n# DPV Personal Data Handling\n`;
-    ttl += `${dpvId} a dpv:PersonalDataHandling ;\n`;
-    ttl += `  dpv:hasProcessing ${method === "GET" ? "dpv:Access" : "dpv:Create"} ;\n`;
-    ttl += `  dpv:hasResource <${resource}> ;\n`;
-    ttl += `  ex:accessedByApp "${app}" ;\n`;
-    ttl += `  ex:containsSensitiveData "${personalData.sensitive}"^^xsd:boolean ;\n`;
-    ttl += `  ex:sensitiveFieldCount "${personalData.sensitiveFields.length}"^^xsd:integer ;\n`;
-    ttl += `  ex:nonSensitiveFieldCount "${personalData.nonSensitiveFields.length}"^^xsd:integer ;\n`;
+    ttl += `
+# DPV Personal Data Handling
+${dpvId} a <https://w3id.org/dpv#PersonalDataHandling> ;
+    <https://w3id.org/dpv#hasProcessing> ${method === "GET" ? "<https://w3id.org/dpv#Access>" : "<https://w3id.org/dpv#Create>"} ;
+    <https://w3id.org/dpv#hasResource> <${resource}> ;
+    <https://w3id.org/force/compliance-report#accessedByApp> "${app}" ;
+    <https://w3id.org/force/compliance-report#containsSensitiveData> "${personalData.sensitive}"^^<http://www.w3.org/2001/XMLSchema#boolean> ;
+    <https://w3id.org/force/compliance-report#sensitiveFieldCount> "${personalData.sensitiveFields.length}"^^<http://www.w3.org/2001/XMLSchema#integer> ;
+    <https://w3id.org/force/compliance-report#nonSensitiveFieldCount> "${personalData.nonSensitiveFields.length}"^^<http://www.w3.org/2001/XMLSchema#integer> .\n`;
     
-    personalData.personalData.forEach(p => ttl += `  dpv:hasPersonalData ${p} ;\n`);
-    personalData.dataCategories.forEach(c => ttl += `  dpv:hasDataCategory ${c} ;\n`);
-    
+    // ✅ Log setiap field yang diakses
     personalData.fields.forEach((f, i) => {
-      ttl += `  ex:hasDataField "${f}" ;\n`;
-      ttl += `  ex:hasDataValue "${personalData.values[i].replace(/"/g, '\\"')}" ;\n`;
+      const isSensitive = personalData.sensitiveFields.includes(f);
+      ttl += `${dpvId} <https://w3id.org/force/compliance-report#hasDataField> "${f}" ;\n`;
+      ttl += `${dpvId} <https://w3id.org/force/compliance-report#hasDataValue> "${personalData.values[i].replace(/"/g, '\\"')}" ;\n`;
+      ttl += `${dpvId} <https://w3id.org/force/compliance-report#isSensitive> "${isSensitive}"^^<http://www.w3.org/2001/XMLSchema#boolean> .\n`;
     });
-    
-    ttl += `  dct:created "${timestamp}"^^xsd:dateTime .\n`;
   }
   
   await fs.appendFile(logFile, ttl);
   
+  // ✅ Console log dengan detail lengkap (restore logging sebelumnya)
   const status = decision.permitted ? "✅ ACCESS ALLOWED" : "⚠️ POLICY VIOLATION (allowed)";
   const fields = sensitiveFields.length > 0 ? sensitiveFields.join(', ') : 'none';
+  
   console.log(`${status} | App: ${app} | Fields: ${fields} | Reason: ${decision.reason}`);
+  
+  // ✅ RESTORE: Tampilkan detail data sensitif & non-sensitif
   if (personalData) {
     console.log(`   📊 Data: ${personalData.sensitiveFields.length} sensitif, ${personalData.nonSensitiveFields.length} non-sensitif`);
+    if (personalData.sensitiveFields.length > 0) {
+      console.log(`   🔒 Sensitive: ${personalData.sensitiveFields.join(', ')}`);
+    }
+    if (personalData.nonSensitiveFields.length > 0) {
+      console.log(`   📋 Non-sensitive: ${personalData.nonSensitiveFields.join(', ')}`);
+    }
   }
 }
 
-/* ===============================
-   ✅ UPDATE STATE OF THE WORLD (CRITICAL FIX)
-================================ */
-async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED", reason = "") {
+async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED") {
   const sotwFile = await ensureSotWFile(pod);
   let content = await fs.readFile(sotwFile, 'utf-8');
   const now = new Date().toISOString();
   
-  // Update ex:sotw-current (selalu di-update)
-  if (content.includes('ex:sotw-current')) {
-    content = content.replace(
-      /(ex:sotw-current a :SotW ;\s+dct:modified ")[^"]+/, 
-      `$1${now}`
-    );
-    content = content.replace(
-      /(:currentTime ")[^"]+/, 
-      `$1${now}`
-    );
-  } else {
-    content += `\nex:sotw-current a :SotW ;\n    dct:modified "${now}"^^xsd:dateTime ;\n    :currentTime "${now}"^^xsd:dateTime .\n`;
+  if (!content.includes('ex:sotw-blood-type') && countData) {
+    content += `\nex:sotw-blood-type <https://w3id.org/force/sotw#target> <ex:blood-type> ;\n    <https://w3id.org/force/sotw#count> "${countData.count}"^^<http://www.w3.org/2001/XMLSchema#integer> .\n`;
+    await fs.writeFile(sotwFile, content);
   }
-  
-  // ✅ KRUSIAL: Normalisasi field untuk ex:last-attempt
-  const normalizedFieldForLog = field ? normalizeField(field) : 'none';
-  const lastAttemptEntry = `
-# Latest access attempt
-ex:last-attempt a :SotW ;
-    :attemptTime "${now}"^^xsd:dateTime ;
-    :decision "${decision}" ;
-    :reason "${reason.replace(/"/g, '\\"')}" ;
-    :field "${normalizedFieldForLog}" .\n`;
-  
-  if (content.includes('ex:last-attempt')) {
-    const lines = content.split('\n');
-    const startIndex = lines.findIndex(line => line.includes('ex:last-attempt'));
-    if (startIndex !== -1) {
-      let endIndex = startIndex + 1;
-      while (endIndex < lines.length && lines[endIndex].trim() !== '') endIndex++;
-      lines.splice(startIndex, endIndex - startIndex, lastAttemptEntry.trim());
-      content = lines.join('\n');
-    }
-  } else {
-    content += '\n' + lastAttemptEntry;
-  }
-  
-  // ✅ Update ex:sotw-blood-type untuk SETIAP akses yang memiliki countData
-  if (countData) {
-    const sotwEntry = `
-# Per-resource tracking
-ex:sotw-blood-type a :SotW ;
-    :target ex:blood-type ;
-    :count "${countData.count}"^^xsd:integer ;
-    :lastAccessed "${countData.lastAccess}"^^xsd:dateTime ;
-    :firstCollected "${countData.firstAccess}"^^xsd:dateTime .\n`;
-    
-    if (content.includes('ex:sotw-blood-type')) {
-      const lines = content.split('\n');
-      const startIndex = lines.findIndex(line => line.includes('ex:sotw-blood-type'));
-      if (startIndex !== -1) {
-        let endIndex = startIndex + 1;
-        while (endIndex < lines.length && lines[endIndex].trim() !== '') endIndex++;
-        lines.splice(startIndex, endIndex - startIndex, sotwEntry.trim());
-        content = lines.join('\n');
-      }
-    } else {
-      content += '\n' + sotwEntry;
-    }
-  }
-  
-  await fs.writeFile(sotwFile, content);
-  console.log(`📊 SotW updated (${decision}): ${normalizedFieldForLog} | Count: ${countData?.count || 'N/A'}`);
+  console.log(`📊 SotW updated (${decision}): ${field || 'none'} | Count: ${countData?.count || 'N/A'}`);
 }
 
 /* ===============================
-   ✅ BUILD SOTW WITH COUNT (FIXED)
+   ✅ BUILD SOTW WITH COUNT
 ================================ */
 async function buildSotWWithCount(pod, evalRequest, pathname, sensitiveFields) {
   const sotw = await sotwProvider.build(pod, evalRequest, pathname, sensitiveFields);
   const app = extractAppName(pathname);
   const countState = {};
-  
   for (const field of sensitiveFields) {
     const normalizedField = normalizeField(field);
-    const countData = accessCounter.get(pod, app, normalizedField) || { 
-      count: 0, lastAccess: null, firstAccess: null 
-    };
+    const countData = accessCounter.get(pod, app, normalizedField) || { count: 0 };
     countState[normalizedField] = countData;
   }
-  
   sotw.count = countState;
   return sotw;
 }
 
 /* ===============================
-   GATEWAY SERVER (MONITORING MODE) - SESUAI RAILWAY
+   🔥 INCREMENT COUNT BEFORE EVALUATION (VIOLATION DETECTION)
+================================ */
+async function incrementAndEvaluate(pod, app, sensitiveFields, evalRequest, pathname) {
+  // STEP 1: Increment count DULU
+  for (const fld of sensitiveFields) {
+    const normalizedField = normalizeField(fld);
+    if (SENSITIVE_FIELDS[normalizedField]) {
+      const now = new Date().toISOString();
+      if (shouldCountRequest(pod, app, normalizedField, now)) {
+        await sotwProvider.incrementAccessCount(pod, app, normalizedField);
+        console.log(`📈 Count incremented BEFORE eval: ${normalizedField}`);
+      }
+    }
+  }
+  
+  // STEP 2: BARU evaluate dengan count terbaru
+  const sotw = await buildSotWWithCount(pod, evalRequest, pathname, sensitiveFields);
+  return policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
+}
+
+/* ===============================
+   GATEWAY SERVER (MONITORING MODE)
+   ✅ TRUE MONITORING: Proxy dulu, evaluasi belakangan (TIDAK BLOCKING)
 ================================ */
 http.createServer(async (req, res) => {
   const { method, url, headers } = req;
   
-  /* 🚑 HEALTHCHECK */
   if (method === "GET" && (url === "/" || url === "/health")) {
     res.writeHead(200, { "Content-Type": "text/plain" });
     return res.end("OK");
   }
 
-  // Target ke CSS internal (port 4000)
-  const target = new URL(url, `http://localhost:${CSS_PORT}`);
+  const target = new URL(url, GATEWAY_BASE);
   const pod = detectPod(target.pathname);
-
   let body = "";
   for await (const c of req) body += c;
 
-  // 🔐 ODRL POLICY EVALUATION (PRE-PROXY untuk WRITE)
-  if (isAuthenticated(headers) && !isSystem(target.pathname)) {
-    try {
-      const evalRequest = requestBuilder.buildFromHttpRequest(req, target.pathname, pod);
-      const sensitiveFields = ['POST', 'PUT', 'PATCH'].includes(method) 
-        ? extractSensitiveFields(body) 
-        : [];
-      
-      if (sensitiveFields.length > 0) {
-        const sotw = await buildSotWWithCount(pod, evalRequest, target.pathname, sensitiveFields);
-        const decisionResult = policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
-        let personalData = extractPersonalData(body, target.pathname);
-        
-        // Resource URL menggunakan PUBLIC_BASE_URL
-        const resourceUrl = `${PUBLIC_BASE_URL}${target.pathname}`;
-        
-        await writeAccessLog({ 
-          pod, evalRequest, decision: decisionResult, sensitiveFields,
-          violationType: decisionResult.violatedConstraints[0]?.violationType,
-          personalData, method, resource: resourceUrl
-        });
-        
-        const app = extractAppName(target.pathname);
-        const normalizedField = normalizeField(sensitiveFields[0]);
-        const decisionStr = decisionResult.permitted ? "ALLOWED" : "VIOLATION";
-        
-        // Update SotW untuk setiap attempt
-        await updateSotW(pod, app, normalizedField, null, decisionStr, decisionResult.reason);
-        
-        if (!decisionResult.permitted) {
-          console.log('⚠️ POLICY VIOLATION DETECTED (access allowed):', decisionResult.reason);
-        }
-        
-        // Increment count untuk SEMUA akses (termasuk violation) yang tidak duplicate
-        for (const fld of sensitiveFields) {
-          const normalizedFld = normalizeField(fld);
-          if (SENSITIVE_FIELDS[normalizedFld]) {
-            const now = new Date().toISOString();
-            const shouldCount = shouldCountRequest(pod, app, normalizedFld, now);
-            
-            if (shouldCount) {
-              const countData = await sotwProvider.incrementAccessCount(pod, app, normalizedFld);
-              console.log(`📈 Count incremented: ${normalizedFld} = ${countData.count}`);
-              await updateSotW(pod, app, normalizedFld, countData, decisionStr, decisionResult.reason);
-            }
-          }
-        }
-      }
-      
-    } catch (error) {
-      console.error('❌ ODRL evaluation error:', error);
-    }
+  // 🔐 DEPLOY POLICY (fire-and-forget, tidak blocking)
+  if (isAuthenticated(headers) && pod && isValidPodName(pod) && !deployedPods.has(pod)) {
+    await ensurePolicyDeployed(pod, headers.authorization);
   }
 
-  // Proxy ke CSS (port 4000)
-  const proxy = http.request(
-    { hostname: "localhost", port: CSS_PORT, path: url, method, headers },
-    async pres => {
-      let resp = "";
-      for await (const c of pres) resp += c;
+  // ✅ Proxy ke CSS (SELALU DILAKUKAN - tidak ada blocking)
+  // ✅ FIX: Gunakan 127.0.0.1 untuk koneksi proxy (hindari DNS error)
+  const proxy = http.request({
+    hostname: "127.0.0.1",  // ✅ FIX: IP langsung untuk hindari ENOTFOUND
+    port: CSS_PORT,
+    path: url,  // ✅ Path asli dari client (localhost:3001/...)
+    method,
+    headers: { ...headers }  // ✅ Forward headers asli
+  }, async pres => {
+    let resp = "";
+    for await (const c of pres) resp += c;
 
-      // 🔐 ODRL EVALUATION untuk GET response (post-proxy)
-      if (method === "GET" && isAuthenticated(headers) && !isSystem(target.pathname)) {
-        try {
+    // 🔐 ODRL EVALUATION untuk GET response (POST-PROXY, tidak blocking)
+    if (method === "GET" && isAuthenticated(headers) && !isSystem(target.pathname)) {
+      try {
+        const sensitiveFields = extractSensitiveFields(resp);
+        
+        // ✅ HANYA evaluasi jika ada sensitive fields
+        if (sensitiveFields.length > 0) {
           const evalRequest = requestBuilder.buildFromHttpRequest(req, target.pathname, pod);
-          const sensitiveFields = extractSensitiveFields(resp);
           
-          if (sensitiveFields.length > 0) {
-            const sotw = await buildSotWWithCount(pod, evalRequest, target.pathname, sensitiveFields);
-            const decisionResult = policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
-            let personalData = extractPersonalData(resp, target.pathname);
-            
-            // Resource URL menggunakan PUBLIC_BASE_URL
-            const resourceUrl = `${PUBLIC_BASE_URL}${target.pathname}`;
-            
-            await writeAccessLog({ 
-              pod, evalRequest, decision: decisionResult, sensitiveFields,
-              violationType: decisionResult.violatedConstraints[0]?.violationType,
-              personalData, method, resource: resourceUrl
-            });
-            
-            const app = extractAppName(target.pathname);
-            const normalizedField = normalizeField(sensitiveFields[0]);
-            const decisionStr = decisionResult.permitted ? "ALLOWED" : "VIOLATION";
-            
-            // Update SotW untuk setiap attempt
-            await updateSotW(pod, app, normalizedField, null, decisionStr, decisionResult.reason);
-            
-            if (!decisionResult.permitted) {
-              console.log('⚠️ POLICY VIOLATION DETECTED (access allowed):', decisionResult.reason);
-            }
-            
-            // Increment count untuk SEMUA akses (termasuk violation) yang tidak duplicate
-            for (const fld of sensitiveFields) {
-              const normalizedFld = normalizeField(fld);
-              if (SENSITIVE_FIELDS[normalizedFld]) {
-                const now = new Date().toISOString();
-                const shouldCount = shouldCountRequest(pod, app, normalizedFld, now);
-                
-                if (shouldCount) {
-                  const countData = await sotwProvider.incrementAccessCount(pod, app, normalizedFld);
-                  console.log(`📈 Count incremented: ${normalizedFld} = ${countData.count}`);
-                  await updateSotW(pod, app, normalizedFld, countData, decisionStr, decisionResult.reason);
-                }
+          // 🔥 STEP 1: Increment count DULU
+          for (const fld of sensitiveFields) {
+            const normalizedField = normalizeField(fld);
+            if (SENSITIVE_FIELDS[normalizedField]) {
+              const now = new Date().toISOString();
+              if (shouldCountRequest(pod, extractAppName(target.pathname), normalizedField, now)) {
+                await sotwProvider.incrementAccessCount(pod, extractAppName(target.pathname), normalizedField);
+                console.log(`📈 Count incremented: ${normalizedField}`);
               }
             }
           }
           
-        } catch (error) {
-          console.error('❌ ODRL evaluation error (response):', error);
+          // 🔥 STEP 2: BARU evaluate dengan count terbaru
+          const sotw = await buildSotWWithCount(pod, evalRequest, target.pathname, sensitiveFields);
+          const decisionResult = policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
+          
+          const personalData = extractPersonalData(resp);
+          await writeAccessLog({ 
+            pod, evalRequest, decision: decisionResult, sensitiveFields,
+            violationType: decisionResult.violatedConstraints[0]?.violationType,
+            personalData, method, resource: `${GATEWAY_BASE}${target.pathname}` 
+          });
+          
+          if (!decisionResult.permitted) {
+            console.log('⚠️ POLICY VIOLATION DETECTED (access allowed):', decisionResult.reason);
+          }
         }
+      } catch (error) {
+        console.error('⚠️ ODRL evaluation skipped (response):', error.message);
       }
-
-      res.writeHead(pres.statusCode, pres.headers);
-      res.end(resp);
     }
-  );
+    
+    // ✅ SELALU kirim response ke client (monitoring mode)
+    res.writeHead(pres.statusCode, pres.headers);
+    res.end(resp);
+  });
+
+  // ✅ FIX: Error handling untuk proxy connection
+  proxy.on('error', (err) => {
+    console.error('❌ Proxy error:', err.message);
+    if (!res.headersSent) {
+      res.writeHead(502, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Bad Gateway", message: err.message }));
+    }
+  });
 
   if (body) proxy.write(body);
   proxy.end();
+  
 }).listen(GATEWAY_PORT, async () => {
   await loadPolicies();
-  
-  console.log(`\n✅ Solid Gateway with ODRL (MONITORING MODE) @ http://localhost:${GATEWAY_PORT}`);
-  console.log(`🌐 Public Base URL: ${PUBLIC_BASE_URL}`);
-  console.log(`📊 ODRL Policies Loaded`);
-  console.log(`   • Blood Type Access: Max 3 accesses`);
+  console.log(`\n✅ Solid Gateway with ODRL (MONITORING MODE) @ ${GATEWAY_BASE}`);
+  console.log(`📊 Violation Detection: Count incremented BEFORE evaluation`);
+  console.log(`   • Constraint: Max N accesses (parsed from ${POLICY_PATH})`);
   console.log(`   • Mode: MONITORING (violations logged but NOT blocked)`);
   console.log(`💾 Access Counter: ${accessCounter.getStats().totalEntries} entries\n`);
   
-  console.log('🔄 Resetting access counter for testing...');
   accessCounter.resetPod('ayobisa2');
   console.log('✅ Access counter reset - Count starts from 0');
+  console.log('🎯 Test: Access ke-4 akan log "VIOLATION" (count=4 > max=3)\n');
 });
