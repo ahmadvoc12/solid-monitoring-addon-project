@@ -5,22 +5,20 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 // ODRL Components
-import { ODRLPolicyEngine } from './odrl/policy-engine.mjs';
-import { EvaluationRequestBuilder } from './odrl/request-builder.mjs';
-import { StateOfTheWorldProvider } from './odrl/context-provider.mjs';
-import { ComplianceReporter } from './odrl/compliance-reporter.mjs';
-import { getAccessCounter } from './odrl/access-counter.mjs';
+import { ODRLPolicyEngine } from './odrl/policy-engine.js';
+import { EvaluationRequestBuilder } from './odrl/request-builder.js';
+import { StateOfTheWorldProvider } from './odrl/context-provider.js';
+import { ComplianceReporter } from './odrl/compliance-reporter.js';
+import { getAccessCounter } from './odrl/access-counter.js';
 
 /* ===============================
-   CONFIG (SESUAI RAILWAY)
-   ✅ FIX: Definisikan GATEWAY_BASE (sebelumnya hanya PUBLIC_BASE_URL)
+   CONFIG
+   ✅ FIX: Gunakan localhost untuk GATEWAY_BASE (match client), 127.0.0.1 untuk proxy
 ================================ */
-const GATEWAY_PORT = 3000;           // ✅ SESUAI RAILWAY
-const CSS_PORT = 4000;               // ✅ INTERNAL CSS PORT
-const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app"; // ✅ Trim trailing spaces
-
-// ✅ FIX: GATEWAY_BASE harus didefinisikan untuk spawn CSS server
-const GATEWAY_BASE = PUBLIC_BASE_URL;  // ✅ Gunakan PUBLIC_BASE_URL yang sudah di-trim
+const GATEWAY_PORT = 3001;
+const CSS_PORT = 3000;
+const GATEWAY_BASE = `http://localhost:${GATEWAY_PORT}`;  // ✅ Match client requests
+const CSS_BASE = `http://localhost:${CSS_PORT}`;
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_ACCESS_PATH = "private/audit/access";
@@ -434,7 +432,7 @@ async function loadPolicies(podName = null) {
    🚀 DEPLOY POLICY (Fire-and-forget - TIDAK BLOCKING)
 ================================ */
 const deployedPods = new Set();
-const deployingPods = new Set();
+const deployingPods = new Set();  // ✅ FIX: Gunakan Set (bukan Map)
 
 function isValidPodName(podName) {
   if (!podName) return false;
@@ -490,7 +488,6 @@ async function ensurePolicyDeployed(podName, authToken) {
 
 /* ===============================
    START SOLID CSS
-   ✅ FIX: Gunakan GATEWAY_BASE yang sudah didefinisikan
 ================================ */
 spawn(
   "node",
@@ -499,7 +496,7 @@ spawn(
     "-c", "config/file.json",
     "-f", DATA_ROOT,
     "-p", String(CSS_PORT),
-    "--baseUrl", GATEWAY_BASE  // ✅ Sekarang GATEWAY_BASE sudah terdefinisi!
+    "--baseUrl", GATEWAY_BASE
   ],
   { stdio: "inherit" }
 );
@@ -668,16 +665,74 @@ ${dpvId} a <https://w3id.org/dpv#PersonalDataHandling> ;
   }
 }
 
-async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED") {
+/* ===============================
+   UPDATE STATE OF THE WORLD - RESTORE DETAILED LOGGING
+================================ */
+async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED", reason = "") {
   const sotwFile = await ensureSotWFile(pod);
   let content = await fs.readFile(sotwFile, 'utf-8');
   const now = new Date().toISOString();
   
-  if (!content.includes('ex:sotw-blood-type') && countData) {
-    content += `\nex:sotw-blood-type <https://w3id.org/force/sotw#target> <ex:blood-type> ;\n    <https://w3id.org/force/sotw#count> "${countData.count}"^^<http://www.w3.org/2001/XMLSchema#integer> .\n`;
-    await fs.writeFile(sotwFile, content);
+  // ✅ Update ex:sotw-current timestamp
+  if (content.includes('ex:sotw-current')) {
+    content = content.replace(/(ex:sotw-current a :SotW ;\s+dct:modified ")[^"]+/, `$1${now}`);
+    content = content.replace(/(:currentTime ")[^"]+/, `$1${now}`);
+  } else {
+    content += `\nex:sotw-current a :SotW ;\n    dct:modified "${now}"^^xsd:dateTime ;\n    :currentTime "${now}"^^xsd:dateTime .\n`;
   }
+  
+  // ✅ Update ex:last-attempt dengan detail lengkap
+  const lastAttemptEntry = `
+# Latest access attempt
+ex:last-attempt a :SotW ;
+    :attemptTime "${now}"^^xsd:dateTime ;
+    :decision "${decision}" ;
+    :reason "${reason.replace(/"/g, '\\"')}" ;
+    :field "${field || 'none'}" .\n`;
+  
+  if (content.includes('ex:last-attempt')) {
+    const lines = content.split('\n');
+    const startIndex = lines.findIndex(line => line.includes('ex:last-attempt'));
+    if (startIndex !== -1) {
+      let endIndex = startIndex + 1;
+      while (endIndex < lines.length && lines[endIndex].trim() !== '') endIndex++;
+      lines.splice(startIndex, endIndex - startIndex, lastAttemptEntry.trim());
+      content = lines.join('\n');
+    }
+  } else {
+    content += '\n' + lastAttemptEntry;
+  }
+  
+  // ✅ Update ex:sotw-blood-type dengan count data
+  if (countData) {
+    const sotwEntry = `
+ex:sotw-blood-type a :SotW ;
+    :target ex:blood-type ;
+    :count "${countData.count}"^^xsd:integer ;
+    :lastAccessed "${countData.lastAccess}"^^xsd:dateTime ;
+    :firstCollected "${countData.firstAccess}"^^xsd:dateTime .\n`;
+    
+    if (content.includes('ex:sotw-blood-type')) {
+      const lines = content.split('\n');
+      const startIndex = lines.findIndex(line => line.includes('ex:sotw-blood-type'));
+      if (startIndex !== -1) {
+        let endIndex = startIndex + 1;
+        while (endIndex < lines.length && lines[endIndex].trim() !== '') endIndex++;
+        lines.splice(startIndex, endIndex - startIndex, sotwEntry.trim());
+        content = lines.join('\n');
+      }
+    } else {
+      content += '\n' + sotwEntry;
+    }
+  }
+  
+  await fs.writeFile(sotwFile, content);
+  
+  // ✅ Console log dengan detail lengkap
   console.log(`📊 SotW updated (${decision}): ${field || 'none'} | Count: ${countData?.count || 'N/A'}`);
+  if (countData) {
+    console.log(`   🕐 Last: ${countData.lastAccess || 'N/A'} | First: ${countData.firstAccess || 'N/A'}`);
+  }
 }
 
 /* ===============================
@@ -735,9 +790,9 @@ http.createServer(async (req, res) => {
     await ensurePolicyDeployed(pod, headers.authorization);
   }
 
-  // ✅ Proxy ke CSS - untuk Railway, gunakan localhost karena CSS berjalan di container yang sama
+  // ✅ Proxy ke CSS - gunakan 127.0.0.1 untuk hindari DNS error
   const proxy = http.request({
-    hostname: "127.0.0.1",  // ✅ CSS berjalan di localhost:4000 dalam container yang sama
+    hostname: "127.0.0.1",  // ✅ FIX: IP langsung untuk hindari ENOTFOUND
     port: CSS_PORT,
     path: url,
     method,
@@ -774,6 +829,13 @@ http.createServer(async (req, res) => {
             personalData, method, resource: `${GATEWAY_BASE}${target.pathname}` 
           });
           
+          // ✅ RESTORE: Update SotW dengan detail lengkap
+          const app = extractAppName(target.pathname);
+          const normalizedField = normalizeField(sensitiveFields[0]);
+          const decisionStr = decisionResult.permitted ? "ALLOWED" : "VIOLATION";
+          const countData = accessCounter.get(pod, app, normalizedField);
+          await updateSotW(pod, app, normalizedField, countData, decisionStr, decisionResult.reason);
+          
           if (!decisionResult.permitted) {
             console.log('⚠️ POLICY VIOLATION DETECTED (access allowed):', decisionResult.reason);
           }
@@ -787,6 +849,7 @@ http.createServer(async (req, res) => {
     res.end(resp);
   });
 
+  // ✅ FIX: Error handling untuk proxy connection
   proxy.on('error', (err) => {
     console.error('❌ Proxy error:', err.message);
     if (!res.headersSent) {
