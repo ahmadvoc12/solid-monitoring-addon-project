@@ -12,12 +12,12 @@ import { ComplianceReporter } from './odrl/compliance-reporter.mjs';
 import { getAccessCounter } from './odrl/access-counter.mjs';
 
 /* ===============================
-   CONFIG
+   CONFIG (SESUAI RAILWAY)
 ================================ */
-const GATEWAY_PORT = 3001;
-const CSS_PORT = 3000;
-const GATEWAY_BASE = `http://localhost:${GATEWAY_PORT}`;
-const CSS_BASE = `http://localhost:${CSS_PORT}`;
+const GATEWAY_PORT = 3000;
+const CSS_PORT = 4000;
+const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app";
+const GATEWAY_BASE = PUBLIC_BASE_URL;
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_ACCESS_PATH = "private/audit/access";
@@ -706,7 +706,6 @@ function extractPersonalData(rdf) {
 
 /* ===============================
    ACCESS LOG & SOTW
-   ✅ FIX: Prefix ditulis SEKALI saja saat file pertama kali dibuat
 ================================ */
 async function ensureAccessLogFile(pod) {
   const dir = path.join(DATA_ROOT, pod, AUDIT_ACCESS_PATH);
@@ -731,8 +730,8 @@ ex:access-log a prov:Collection .
 }
 
 /* ===============================
-   ✅ ENSURE SOTW FILE - WITH PROPER ONTOLOGY STRUCTURE
-   ✅ FIX: Tambahkan SotW dengan structure lengkap sesuai paper sibb.pdf
+   ✅ ENSURE SOTW FILE - WITH PROPER ONTOLOGY STRUCTURE (sibb.pdf)
+   ✅ CQS1: currentTime, CQS2: currentLocation, CQS6: count
 ================================ */
 async function ensureSotWFile(pod) {
   const dir = path.join(DATA_ROOT, pod, AUDIT_MONITORING_PATH);
@@ -742,20 +741,21 @@ async function ensureSotWFile(pod) {
   try { 
     await fs.access(file); 
   } catch {
-    // ✅ SotW dengan structure lengkap sesuai ontology paper
     const timestamp = new Date().toISOString();
+    // ✅ SotW dengan structure lengkap sesuai ontology paper sibb.pdf
     await fs.writeFile(file, `@prefix ex: <https://example.org/> .
 @prefix sotw: <https://w3id.org/force/sotw#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 @prefix odrl: <http://www.w3.org/ns/odrl/2/> .
+@prefix dct: <http://purl.org/dc/terms/> .
 
 # ===== State of the World (SotW) =====
 # ✅ Sesuai ontology: https://w3id.org/force/sotw#
 ex:sotw-current a sotw:SotW ;
     # CQS1: Current time
     sotw:currentTime "${timestamp}"^^xsd:dateTime ;
-    # CQS2: Current location (optional - bisa diupdate nanti)
-    sotw:currentLocation "https://www.iso.org/obp/ui/#iso:code:3166:ID" ;
+    # CQS2: Current location (ISO 3166 country code)
+    sotw:currentLocation <https://www.iso.org/obp/ui/#iso:code:3166:ID> ;
     # CQS6: Count tracking untuk bloodType
     sotw:count [
         a sotw:Count ;
@@ -789,7 +789,7 @@ async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED
   );
   
   // ✅ Update count untuk field tertentu (CQS6)
-  if (countData) {
+  if (countData && field) {
     const cleanFieldIRI = cleanIRI(field);
     const countRegex = new RegExp(
       `(odrl:target\\s+${cleanFieldIRI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;\\s*sotw:countValue\\s+")[^"]+("^^xsd:integer)`,
@@ -814,7 +814,7 @@ ex:sotw-current sotw:count [
   }
   
   await fs.writeFile(sotwFile, content);
-  console.log(`📊 SotW updated (${decision}): ${field || 'none'} | Count: ${countData?.count || 'N/A'}`);
+  console.log(`🌍 SotW updated (${decision}): ${field || 'none'} | Count: ${countData?.count || 'N/A'}`);
 }
 
 /* ===============================
@@ -1143,7 +1143,7 @@ http.createServer(async (req, res) => {
           
           const personalData = extractPersonalData(resp);
           
-          // ✅ UPDATE SOTW dengan contextual information
+          // ✅ UPDATE SOTW dengan contextual information (sesuai paper sibb.pdf)
           for (const field of sensitiveFields) {
             const cleanFieldIRI = cleanIRI(field);
             const countData = accessCounter.get(pod, app, cleanFieldIRI) || { count: 0 };
