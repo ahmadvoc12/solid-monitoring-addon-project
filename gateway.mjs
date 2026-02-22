@@ -5,22 +5,19 @@ import { URL } from "url";
 import { spawn } from "child_process";
 
 // ODRL Components
-import { ODRLPolicyEngine } from './odrl/policy-engine.mjs';
-import { EvaluationRequestBuilder } from './odrl/request-builder.mjs';
-import { StateOfTheWorldProvider } from './odrl/context-provider.mjs';
-import { ComplianceReporter } from './odrl/compliance-reporter.mjs';
-import { getAccessCounter } from './odrl/access-counter.mjs';
+import { ODRLPolicyEngine } from './odrl/policy-engine.js';
+import { EvaluationRequestBuilder } from './odrl/request-builder.js';
+import { StateOfTheWorldProvider } from './odrl/context-provider.js';
+import { ComplianceReporter } from './odrl/compliance-reporter.js';
+import { getAccessCounter } from './odrl/access-counter.js';
 
 /* ===============================
-   CONFIG (SESUAI RAILWAY)
-   ✅ FIX: Definisikan GATEWAY_BASE (sebelumnya hanya PUBLIC_BASE_URL)
+   CONFIG
 ================================ */
-const GATEWAY_PORT = 3000;           // ✅ SESUAI RAILWAY
-const CSS_PORT = 4000;               // ✅ INTERNAL CSS PORT
-const PUBLIC_BASE_URL = "https://solid-monitoring-addon-project-production.up.railway.app"; // ✅ Trim trailing spaces
-
-// ✅ FIX: GATEWAY_BASE harus didefinisikan untuk spawn CSS server
-const GATEWAY_BASE = PUBLIC_BASE_URL;  // ✅ Sekarang terdefinisi!
+const GATEWAY_PORT = 3001;
+const CSS_PORT = 3000;
+const GATEWAY_BASE = `http://localhost:${GATEWAY_PORT}`;
+const CSS_BASE = `http://localhost:${CSS_PORT}`;
 
 const DATA_ROOT = path.resolve(process.cwd(), ".data");
 const AUDIT_ACCESS_PATH = "private/audit/access";
@@ -32,8 +29,6 @@ const POLICY_ACL_PATH = "private/audit/access/monitor-policy.ttl.acl";
 
 /* ===============================
    SENSITIVE FIELD CONFIGURATION
-   ✅ FIX KRUSIAL: HAPUS SEMUA trailing spaces di IRI keys
-   ✅ Keys harus match persis dengan output normalizeField()
 ================================ */
 const SENSITIVE_FIELDS = {
   "<https://schema.org/bloodType>": {
@@ -130,7 +125,6 @@ ${cleanAlias} a <https://w3id.org/force/compliance-report#PolicyAlias> ;
 
 /* ===============================
    ✅ POLICY METADATA PARSER (Fully Semantic)
-   ✅ FIX: Handle target dengan format <https://schema.org/xxx>
 ================================ */
 function parsePolicyMetadata(ttlContent) {
   try {
@@ -156,7 +150,6 @@ function parsePolicyMetadata(ttlContent) {
     const descMatch = ttlContent.match(/dct:description\s+"([^"]+)"/);
     if (descMatch?.[1]) metadata.description = descMatch[1];
 
-    // ✅ FIX: Parse target dengan format <https://schema.org/xxx>
     const targetMatch = ttlContent.match(/odrl:target\s+<([^>]+)>/);
     if (targetMatch?.[1]) {
       metadata.target = cleanIRI(targetMatch[1]);
@@ -210,8 +203,7 @@ const complianceReporter = new ComplianceReporter();
 const accessCounter = getAccessCounter(DATA_ROOT);
 
 /* ===============================
-   📄 MULTI-POLICY TTL CONTENT (INLINE) - RESEARCH-GRADE & CLEAN
-   ✅ Semua prefix bersih, target pakai full IRI tanpa spasi
+   📄 MULTI-POLICY TTL CONTENT (INLINE)
 ================================ */
 const MONITOR_POLICIES_TTL = `@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
 @prefix dpv: <https://w3id.org/dpv#> .
@@ -724,7 +716,6 @@ async function ensureAccessLogFile(pod) {
   try { 
     await fs.access(file); 
   } catch {
-    // ✅ Prefix HANYA ditulis sekali saat file pertama kali dibuat
     await fs.writeFile(file, `@prefix ex: <https://example.org/> .
 @prefix prov: <http://www.w3.org/ns/prov#> .
 @prefix dpv: <https://w3id.org/dpv#> .
@@ -739,21 +730,95 @@ ex:access-log a prov:Collection .
   return file;
 }
 
+/* ===============================
+   ✅ ENSURE SOTW FILE - WITH PROPER ONTOLOGY STRUCTURE
+   ✅ FIX: Tambahkan SotW dengan structure lengkap sesuai paper sibb.pdf
+================================ */
 async function ensureSotWFile(pod) {
   const dir = path.join(DATA_ROOT, pod, AUDIT_MONITORING_PATH);
   const file = path.join(dir, "state-of-world.ttl");
   await fs.mkdir(dir, { recursive: true });
-  try { await fs.access(file); } catch {
+  
+  try { 
+    await fs.access(file); 
+  } catch {
+    // ✅ SotW dengan structure lengkap sesuai ontology paper
+    const timestamp = new Date().toISOString();
     await fs.writeFile(file, `@prefix ex: <https://example.org/> .
 @prefix sotw: <https://w3id.org/force/sotw#> .
-ex:sotw-current a sotw:SotW .\n`);
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
+
+# ===== State of the World (SotW) =====
+# ✅ Sesuai ontology: https://w3id.org/force/sotw#
+ex:sotw-current a sotw:SotW ;
+    # CQS1: Current time
+    sotw:currentTime "${timestamp}"^^xsd:dateTime ;
+    # CQS2: Current location (optional - bisa diupdate nanti)
+    sotw:currentLocation "https://www.iso.org/obp/ui/#iso:code:3166:ID" ;
+    # CQS6: Count tracking untuk bloodType
+    sotw:count [
+        a sotw:Count ;
+        sotw:countValue "0"^^xsd:integer ;
+        odrl:target <https://schema.org/bloodType>
+    ] ;
+    # CQS6: Count tracking untuk identity
+    sotw:count [
+        a sotw:Count ;
+        sotw:countValue "0"^^xsd:integer ;
+        odrl:target <https://schema.org/identifier>
+    ] .
+`);
   }
   return file;
 }
 
 /* ===============================
+   ✅ UPDATE SOTW - WITH CONTEXTUAL INFORMATION
+   ✅ FIX: Update SotW dengan current time, count, dan event information
+================================ */
+async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED") {
+  const sotwFile = await ensureSotWFile(pod);
+  let content = await fs.readFile(sotwFile, 'utf-8');
+  const now = new Date().toISOString();
+  
+  // ✅ Update currentTime (CQS1)
+  content = content.replace(
+    /(sotw:currentTime\s+")[^"]+("^^xsd:dateTime)/,
+    `$1${now}$2`
+  );
+  
+  // ✅ Update count untuk field tertentu (CQS6)
+  if (countData) {
+    const cleanFieldIRI = cleanIRI(field);
+    const countRegex = new RegExp(
+      `(odrl:target\\s+${cleanFieldIRI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;\\s*sotw:countValue\\s+")[^"]+("^^xsd:integer)`,
+      'g'
+    );
+    
+    if (countRegex.test(content)) {
+      content = content.replace(
+        countRegex,
+        `$1${countData.count}$2`
+      );
+    } else {
+      // Tambahkan count baru jika belum ada
+      const countBlock = `
+ex:sotw-current sotw:count [
+    a sotw:Count ;
+    sotw:countValue "${countData.count}"^^xsd:integer ;
+    odrl:target ${cleanFieldIRI}
+] .`;
+      content += countBlock;
+    }
+  }
+  
+  await fs.writeFile(sotwFile, content);
+  console.log(`📊 SotW updated (${decision}): ${field || 'none'} | Count: ${countData?.count || 'N/A'}`);
+}
+
+/* ===============================
    ✅ WRITE ACCESS LOG - RESEARCH-GRADE RDF (VALID TTL)
-   ✅ FIX KRUSIAL: violatedPolicy HANYA berisi policy yang memiliki FieldViolation evidence
 ================================ */
 async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields, 
   violationType = null, personalData = null, method = "GET", resource = "",
@@ -767,14 +832,13 @@ async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields,
   const app = evalRequest?.appName || resource.split('/').filter(Boolean)[2] || "unknown";
   const decisionStr = decision.permitted ? "ALLOWED" : "VIOLATION";
   
-  // ✅ Prefix HANYA SEKALI di paling atas (sudah di file init)
   let ttl = `# ===== ROOT: Access Record ${accessId} =====
 ex:${accessId} a prov:Activity ;
     prov:startedAtTime "${timestamp}"^^xsd:dateTime ;
     prov:wasAssociatedWith ex:${app} ;
-    report:decision "${decisionStr}" ;
-    report:accessMethod "${method}" ;
-    report:accessedResource <${resource}> .
+    <https://w3id.org/force/compliance-report#decision> "${decisionStr}" ;
+    <https://w3id.org/force/compliance-report#accessMethod> "${method}" ;
+    <https://w3id.org/force/compliance-report#accessedResource> <${resource}> .
 ex:access-log prov:hadMember ex:${accessId} .\n\n`;
   
   // ─────────────────────────────────────────
@@ -787,14 +851,14 @@ ex:access-log prov:hadMember ex:${accessId} .\n\n`;
 ex:${handlingBundleId} a prov:Bundle ;
     dct:title "Personal Data Handling Context" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} report:hasHandlingBundle ex:${handlingBundleId} .
+ex:${accessId} <https://w3id.org/force/compliance-report#hasHandlingBundle> ex:${handlingBundleId} .
 
 ex:handling-${Date.now()} a dpv:PersonalDataHandling ;
     dpv:hasProcessing ${method === "GET" ? "dpv:Access" : "dpv:Create"} ;
     dpv:hasDataSubject ex:pod-owner ;
-    report:belongsToBundle ex:${handlingBundleId} .
+    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${handlingBundleId} .
 ex:${handlingBundleId} prov:hadMember ex:handling-${Date.now()} .
-ex:${accessId} report:hasPersonalDataHandling ex:handling-${Date.now()} .\n\n`;
+ex:${accessId} <https://w3id.org/force/compliance-report#hasPersonalDataHandling> ex:handling-${Date.now()} .\n\n`;
   }
   
   // ─────────────────────────────────────────
@@ -805,7 +869,7 @@ ex:${accessId} report:hasPersonalDataHandling ex:handling-${Date.now()} .\n\n`;
 ex:${fieldsBundleId} a prov:Bundle ;
     dct:title "Accessed Data Fields" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} report:hasFieldsBundle ex:${fieldsBundleId} .\n\n`;
+ex:${accessId} <https://w3id.org/force/compliance-report#hasFieldsBundle> ex:${fieldsBundleId} .\n\n`;
   
   if (personalData?.fields?.length > 0) {
     personalData.fields.forEach((fieldIRI, idx) => {
@@ -820,14 +884,14 @@ ex:${accessId} report:hasFieldsBundle ex:${fieldsBundleId} .\n\n`;
       const cleanFieldIRI = cleanIRI(fieldIRI);
       
       ttl += `# Field[${idx+1}]: ${fieldLabel}
-ex:${fieldId} a report:AccessedDataField ;
-    report:fieldIRI ${cleanFieldIRI} ;
-    report:fieldName "${fieldLabel}" ;
-    report:fieldValue "${fieldValue}" ;
-    report:isSensitive "${isSensitive}"^^xsd:boolean ;
-    report:dataCategory "${dataCategory}" ;
-    report:personalDataType "${personalDataType}" ;
-    report:belongsToBundle ex:${fieldsBundleId} ;
+ex:${fieldId} a <https://w3id.org/force/compliance-report#AccessedDataField> ;
+    <https://w3id.org/force/compliance-report#fieldIRI> ${cleanFieldIRI} ;
+    <https://w3id.org/force/compliance-report#fieldName> "${fieldLabel}" ;
+    <https://w3id.org/force/compliance-report#fieldValue> "${fieldValue}" ;
+    <https://w3id.org/force/compliance-report#isSensitive> "${isSensitive}"^^xsd:boolean ;
+    <https://w3id.org/force/compliance-report#dataCategory> "${dataCategory}" ;
+    <https://w3id.org/force/compliance-report#personalDataType> "${personalDataType}" ;
+    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${fieldsBundleId} ;
     prov:wasGeneratedBy ex:${accessId} .
 ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .\n\n`;
       
@@ -845,10 +909,9 @@ ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .\n\n`;
 ex:${policyBundleId} a prov:Bundle ;
     dct:title "ODRL Policy Evaluation" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} report:hasPolicyBundle ex:${policyBundleId} .\n\n`;
+ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${policyBundleId} .\n\n`;
 
   const evaluatedPolicies = [];
-  
   for (const field of sensitiveFields) {
     const fieldConfig = getFieldConfig(field);
     if (fieldConfig?.protectedByPolicy) {
@@ -864,12 +927,12 @@ ex:${accessId} report:hasPolicyBundle ex:${policyBundleId} .\n\n`;
         const reasonClean = violationType || (decision.reason ? decision.reason.split(':')[0] : 'N/A');
         const targetAssetIRI = cleanIRI(fieldConfig.asset);
         
-        ttl += `ex:${policyEvalId} a report:PolicyEvaluation ;
-    report:evaluatedPolicy ${aliasResource} ;
-    report:evaluationResult "${decisionStr}" ;
-    report:evaluationReason "${reasonClean}" ;
-    report:targetAsset <${targetAssetIRI}> ;
-    report:belongsToBundle ex:${policyBundleId} .
+        ttl += `ex:${policyEvalId} a <https://w3id.org/force/compliance-report#PolicyEvaluation> ;
+    <https://w3id.org/force/compliance-report#evaluatedPolicy> ${aliasResource} ;
+    <https://w3id.org/force/compliance-report#evaluationResult> "${decisionStr}" ;
+    <https://w3id.org/force/compliance-report#evaluationReason> "${reasonClean}" ;
+    <https://w3id.org/force/compliance-report#targetAsset> <${targetAssetIRI}> ;
+    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${policyBundleId} .
 ex:${policyBundleId} prov:hadMember ex:${policyEvalId} .\n\n`;
         
         ttl += `# ===== Policy Alias Mapping =====\n`;
@@ -890,7 +953,6 @@ ex:${policyBundleId} prov:hadMember ex:${policyEvalId} .\n\n`;
   
   // ─────────────────────────────────────────
   // 📦 SUBGRAPH: Violation Details
-  // ✅ FIX KRUSIAL: violatedPolicy HANYA berisi policy yang memiliki FieldViolation evidence
   // ─────────────────────────────────────────
   if (!decision.permitted && violationType) {
     const violationBundleId = `violation-bundle-${Date.now()}`;
@@ -898,40 +960,34 @@ ex:${policyBundleId} prov:hadMember ex:${policyEvalId} .\n\n`;
 ex:${violationBundleId} a prov:Bundle ;
     dct:title "Policy Violation Context" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} report:hasViolationBundle ex:${violationBundleId} .\n\n`;
+ex:${accessId} <https://w3id.org/force/compliance-report#hasViolationBundle> ex:${violationBundleId} .\n\n`;
 
     const violationId = `violation-${Date.now()}`;
-    
-    // ✅ Track policy yang BENAR-BENAR violate (observed > limit) untuk violatedPolicy triple
     const trulyViolatedPolicyAliases = [];
     
-    // ✅ Structured violation details per field - HANYA untuk field yang observed > limit
     for (const field of sensitiveFields) {
       const fieldConfig = getFieldConfig(field);
       if (fieldConfig) {
         const cleanFieldIRI = cleanIRI(field);
         const app = extractAppName(resource);
-        
         const countData = accessCounter.get(pod, app, cleanFieldIRI) || { count: 0 };
         const observedCount = countData.count;
         
         const policy = policyEngine.getPolicy?.(fieldConfig.protectedByPolicy) || getDefaultPolicies()[fieldConfig.protectedByPolicy];
         const limit = policy?.permission?.constraint?.rightOperand || 3;
         
-        // ✅ HANYA buat FieldViolation DAN track policy jika benar-benar violate: observed > limit
         if (observedCount > limit) {
           const fieldViolationId = `field-violation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           const policyAlias = `ex:policy-${fieldConfig.protectedByPolicy}-default`;
           const cleanPolicyAlias = cleanIRI(policyAlias);
           
-          ttl += `ex:${violationId} report:hasFieldViolation ex:${fieldViolationId} .
-ex:${fieldViolationId} a report:FieldViolation ;
-    report:violatedField ${cleanFieldIRI} ;
-    report:violatedPolicy ${cleanPolicyAlias} ;
-    report:observedCount "${observedCount}"^^xsd:integer ;
-    report:allowedLimit "${limit}"^^xsd:integer .\n`;
+          ttl += `ex:${violationId} <https://w3id.org/force/compliance-report#hasFieldViolation> ex:${fieldViolationId} .
+ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolation> ;
+    <https://w3id.org/force/compliance-report#violatedField> ${cleanFieldIRI} ;
+    <https://w3id.org/force/compliance-report#violatedPolicy> ${cleanPolicyAlias} ;
+    <https://w3id.org/force/compliance-report#observedCount> "${observedCount}"^^xsd:integer ;
+    <https://w3id.org/force/compliance-report#allowedLimit> "${limit}"^^xsd:integer .\n`;
           
-          // ✅ Track policy alias yang benar-benar violate untuk violatedPolicy triple
           if (!trulyViolatedPolicyAliases.includes(cleanPolicyAlias)) {
             trulyViolatedPolicyAliases.push(cleanPolicyAlias);
           }
@@ -939,29 +995,25 @@ ex:${fieldViolationId} a report:FieldViolation ;
       }
     }
     
-    // ✅ FIX KRUSIAL: violatedPolicy HANYA berisi policy yang memiliki FieldViolation evidence
     if (trulyViolatedPolicyAliases.length > 0) {
       const violatedPoliciesStr = trulyViolatedPolicyAliases.join(', ');
       
-      ttl += `ex:${violationId} a report:PolicyViolation ;
-    report:violationType "${violationType}" ;
-    report:violationTimestamp "${timestamp}"^^xsd:dateTime ;
-    report:belongsToBundle ex:${violationBundleId} ;
-    report:violatedPolicy ${violatedPoliciesStr} .\n`;
+      ttl += `ex:${violationId} a <https://w3id.org/force/compliance-report#PolicyViolation> ;
+    <https://w3id.org/force/compliance-report#violationType> "${violationType}" ;
+    <https://w3id.org/force/compliance-report#violationTimestamp> "${timestamp}"^^xsd:dateTime ;
+    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${violationBundleId} ;
+    <https://w3id.org/force/compliance-report#violatedPolicy> ${violatedPoliciesStr} .\n`;
       
       ttl += `ex:${violationBundleId} prov:hadMember ex:${violationId} .\n\n`;
     }
   }
   
-  // ✅ Tulis ke file (tanpa prefix!)
   await fs.appendFile(logFile, ttl);
   
-  // ✅ Console logging YANG JELAS: policy mana yang dilanggar
   const status = decision.permitted ? "✅ ACCESS ALLOWED" : "⚠️ POLICY VIOLATION";
   const fields = sensitiveFields.length > 0 ? sensitiveFields.join(', ') : 'none';
   
   if (!decision.permitted && violationType) {
-    // ✅ Tampilkan detail violation per policy yang benar-benar violate
     const violationDetails = [];
     for (const field of sensitiveFields) {
       const fieldConfig = getFieldConfig(field);
@@ -1090,6 +1142,14 @@ http.createServer(async (req, res) => {
           const decisionResult = policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
           
           const personalData = extractPersonalData(resp);
+          
+          // ✅ UPDATE SOTW dengan contextual information
+          for (const field of sensitiveFields) {
+            const cleanFieldIRI = cleanIRI(field);
+            const countData = accessCounter.get(pod, app, cleanFieldIRI) || { count: 0 };
+            await updateSotW(pod, app, cleanFieldIRI, countData, decisionResult.permitted ? "ALLOWED" : "VIOLATION");
+          }
+          
           await writeAccessLog({ 
             pod, evalRequest, decision: decisionResult, sensitiveFields,
             violationType: decisionResult.violatedConstraints[0]?.violationType,
@@ -1134,11 +1194,12 @@ http.createServer(async (req, res) => {
   console.log(`🔗 Fully Semantic Links: report:evaluatedPolicy → resource`);
   console.log(`🗝️ Policy Alias Mapping: alias → resource → UUID`);
   console.log(`📝 Research-Grade RDF: Prefix once, targetAsset as full IRI, violatedPolicy consistent with FieldViolation`);
+  console.log(`🌍 State of the World: currentTime, count, location (sesuai paper sibb.pdf)`);
   console.log(`💾 Access Counter: ${accessCounter.getStats().totalEntries} entries\n`);
   
   console.log('🎯 Test Sequence:');
-  console.log('   1x bloodType → ALLOWED (count=1, limit=1)');
-  console.log('   2x bloodType → VIOLATION ✅ (count=2 > limit=1) | Policy: Blood Type Access Limit Policy');
-  console.log('   1-3x identity → ALLOWED (count≤3, limit=3)');
-  console.log('   4x identity → VIOLATION ✅ (count=4 > limit=3) | Policy: Identity Access Limit Policy\n');
+  console.log('   1x bloodType → ALLOWED (count=1, limit=1) + SotW updated');
+  console.log('   2x bloodType → VIOLATION ✅ (count=2 > limit=1) + SotW updated');
+  console.log('   1-3x identity → ALLOWED (count≤3, limit=3) + SotW updated');
+  console.log('   4x identity → VIOLATION ✅ (count=4 > limit=3) + SotW updated\n');
 });
