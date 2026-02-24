@@ -1136,23 +1136,25 @@ http.createServer(async (req, res) => {
   proxy.end();
 }).listen(GATEWAY_PORT, async () => {
   await loadPolicies();
+  
   // ✅ RESET counter untuk development/debugging
   accessCounter.resetPod('ayobisa2');
   console.log('✅ Access counter reset - Count starts from 0');
-  console.log(`
-✅ Solid Gateway with ODRL (MONITORING MODE) @ ${GATEWAY_BASE}`);
-  console.log(`📊 Multi-Policy Support: bloodType (limit=1), identity (limit=3)`);
-  console.log(`🔐 Policy as RDF Resource: ex:policy-xxx + dct:identifier + dct:title`);
-  console.log(`🔗 Fully Semantic Links: report:evaluatedPolicy → resource`);
-  console.log(`🗝️ Policy Alias Mapping: alias → resource → UUID`);
-  console.log(`📝 Research-Grade RDF: Prefix once, targetAsset as full IRI, violatedPolicy consistent with FieldViolation`);
-  console.log(`🌍 State of the World: currentTime, count, location (sesuai paper sibb.pdf)`);
-  console.log(`💾 Access Counter: ${accessCounter.getStats().totalEntries} entries
-`);
+  
+  // ✅ FIX: Semua console.log dengan string yang ditutup dengan benar
+  console.log(`✅ Solid Gateway with ODRL (MONITORING MODE) @ ${GATEWAY_BASE}`);
+  console.log('📊 Multi-Policy Support: bloodType (limit=1), identity (limit=3)');
+  console.log('🔐 Policy as RDF Resource: ex:policy-xxx + dct:identifier + dct:title');
+  console.log('🔗 Fully Semantic Links: report:evaluatedPolicy → resource');
+  console.log('🗝️ Policy Alias Mapping: alias → resource → UUID');
+  console.log('📝 Research-Grade RDF: Prefix once, targetAsset as full IRI, violatedPolicy consistent with FieldViolation');
+  console.log('🌍 State of the World: currentTime, count, location (sesuai paper sibb.pdf)');
+  console.log(`💾 Access Counter: ${accessCounter.getStats().totalEntries} entries`);
+  
+  console.log('');
   console.log('🎯 Test Sequence:');
   console.log('   1x bloodType → ALLOWED (count=1, limit=1) + SotW updated');
   console.log('   2x bloodType → VIOLATION ✅ (count=2 > limit=1) + SotW updated');
   console.log('   1-3x identity → ALLOWED (count≤3, limit=3) + SotW updated');
-  console.log('   4x identity → VIOLATION ✅ (count=4 > limit=3) + SotW updated
-');
+  console.log('   4x identity → VIOLATION ✅ (count=4 > limit=3) + SotW updated');
 });
