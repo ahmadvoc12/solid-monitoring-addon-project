@@ -25,9 +25,10 @@ const AUDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 const POLICY_PATH = "private/audit/access/monitor-policy.ttl";
 const POLICY_ACL_PATH = "private/audit/access/monitor-policy.ttl.acl";
 
-// ✅ CACHE CONFIG: Sync policy dari remote hanya jika cache > 5 menit
-const POLICY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const policyCache = new Map(); // { podName: { policies, lastSync, activePolicyIRIs } }
+/* ===============================
+✅ GLOBAL CACHE: Track active policy IRIs per pod
+================================ */
+const activePolicyCache = new Map(); // { podName: Set<IRI> }
 
 /* ===============================
 SENSITIVE FIELD CONFIGURATION
@@ -63,7 +64,7 @@ const NON_SENSITIVE_FIELDS = {
 ================================ */
 function cleanIRI(iri) {
   if (!iri || typeof iri !== 'string') return iri || '';
-  // ✅ Handle ALL whitespace issues: trailing/leading spaces, multiple spaces
+  // ✅ Handle ALL whitespace: trailing/leading spaces, multiple spaces
   return iri
     .replace(/\s+>/g, '>')      // trailing spaces before >
     .replace(/<\s+/g, '<')      // leading spaces after <
@@ -130,7 +131,7 @@ ${cleanAlias} a <https://w3id.org/force/compliance-report#PolicyAlias> ;
 }
 
 /* ===============================
-✅ POLICY METADATA PARSER - ROBUST: Handle ALL policyActive formats
+✅✅✅ POLICY METADATA PARSER - ROBUST: Handle ALL policyActive formats
 ================================ */
 function parsePolicyMetadata(ttlContent) {
   try {
@@ -163,19 +164,24 @@ function parsePolicyMetadata(ttlContent) {
     }
 
     // ✅✅✅ ROBUST: Parse policyActive - handle ALL formats & whitespace
-    // Matches: "true"^^xsd:boolean, "false", false, true, with/without spaces
+    // Matches:
+    // - <...#policyActive> "true"^^xsd:boolean
+    // - <...#policyActive  > "false"^^xsd:boolean  ← trailing spaces
+    // - <...#policyActive> false  ← bare boolean
+    // - <...#policyActive  > true  ← trailing spaces + bare boolean
     const activeMatch = ttlContent.match(
       /<https:\/\/w3id\.org\/force\/compliance-report#policyActive\s*>?\s*("?[^"]+"?\^\^xsd:boolean|true|false)/i
     );
     
     if (activeMatch?.[1]) {
-      const val = activeMatch[1]
+      const rawVal = activeMatch[1];
+      const val = rawVal
         .replace(/"/g, '')                    // Remove quotes
         .replace(/\^\^xsd:boolean/i, '')      // Remove datatype (case-insensitive)
         .trim()
         .toLowerCase();
       metadata.active = val === 'true';
-      console.log(`🔍 Parsed policyActive: "${activeMatch[1].trim()}" → ${metadata.active}`);
+      console.log(`🔍 Parsed policyActive: "${rawVal.trim()}" → ${metadata.active}`);
     } else {
       console.log(`⚠️ policyActive not found in TTL, defaulting to true`);
     }
@@ -468,8 +474,8 @@ async function loadPolicies(podName = null, authToken = null, forceRefresh = fal
   const now = Date.now();
   
   // ✅ Check cache first (avoid remote sync if not needed)
-  const cached = policyCache.get(podName);
-  if (cached && !forceRefresh && (now - cached.lastSync < POLICY_CACHE_TTL_MS)) {
+  const cached = activePolicyCache.get(podName);
+  if (cached && !forceRefresh && (now - cached.lastSync < 5 * 60 * 1000)) {
     console.log(`♻️ Using cached policies for ${podName} (age: ${Math.round((now - cached.lastSync)/1000)}s)`);
     policyEngine.loadPolicies(cached.policies);
     return cached.policies;
@@ -482,7 +488,7 @@ async function loadPolicies(podName = null, authToken = null, forceRefresh = fal
     const policyFile = path.join(DATA_ROOT, podName, POLICY_PATH);
     
     // ✅ Try to sync from remote ONLY if cache is stale or force refresh
-    if ((forceRefresh || !cached || now - (cached?.lastSync || 0) > POLICY_CACHE_TTL_MS) && authToken) {
+    if ((forceRefresh || !cached || now - (cached?.lastSync || 0) > 5 * 60 * 1000) && authToken) {
       try {
         const podBaseUrl = buildPodBaseUrl(podName);
         const policyUrl = new URL(POLICY_PATH, podBaseUrl).href;
@@ -560,8 +566,8 @@ async function loadPolicies(podName = null, authToken = null, forceRefresh = fal
     console.log(`⚠️ No active policies found. All requests will be ALLOWED.`);
   }
   
-  // ✅ Update cache
-  policyCache.set(podName, {
+  // ✅ Update global cache
+  activePolicyCache.set(podName, {
     policies,
     activePolicyIRIs,
     lastSync: now
@@ -849,7 +855,7 @@ ex:sotw-current sotw:count [
 }
 
 /* ===============================
-✅ WRITE ACCESS LOG - STRICT POLICY ACTIVE CHECK
+✅✅✅ WRITE ACCESS LOG - STRICT POLICY ACTIVE CHECK
 ✅ FIX: Skip ALL logging for policies with policyActive=false
 ✅ Uses local cache activePolicyIRIs for fast lookup
 ================================ */
@@ -939,7 +945,7 @@ ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .
   // ─────────────────────────────────────────
   const policyBundleId = `policy-bundle-${Date.now()}`;
   const evaluatedPolicies = [];
-  const cached = policyCache.get(pod);
+  const cached = activePolicyCache.get(pod);
   const activePolicyIRIs = cached?.activePolicyIRIs || new Set();
 
   for (const field of sensitiveFields) {
@@ -948,13 +954,13 @@ ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .
       const policyKey = fieldConfig.protectedByPolicy;
       const policy = policyEngine.getPolicy?.(policyKey);
       
-      // ✅ STRICT CHECK: Skip if policy not in engine OR not active
+      // ✅ STRICT CHECK 1: Skip if policy not in engine OR not active
       if (!policy || !policy.active) {
         console.log(`⏭️ Skipping policy eval logging: Policy ${policyKey} not active or not in engine`);
         continue;
       }
       
-      // ✅ EXTRA CHECK: Verify against activePolicyIRIs set from cache
+      // ✅ STRICT CHECK 2: Verify against activePolicyIRIs set from cache
       const targetIRI = cleanIRI(fieldConfig.asset);
       if (!activePolicyIRIs.has(targetIRI) && !activePolicyIRIs.has(cleanIRI(policy.resource || ''))) {
         console.log(`⏭️ Skipping policy eval logging: ${targetIRI} not in activePolicyIRIs cache`);
@@ -1022,13 +1028,13 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${p
         const policy = policyEngine.getPolicy?.(fieldConfig.protectedByPolicy);
         const limit = policy?.permission?.constraint?.rightOperand || 3;
         
-        // ✅ STRICT CHECK: Skip violation logging if policy inactive
+        // ✅ STRICT CHECK 1: Skip violation logging if policy inactive
         if (!policy || !policy.active) {
           console.log(`⏭️ Skipping violation logging: Policy ${fieldConfig.protectedByPolicy} not active`);
           continue;
         }
         
-        // ✅ EXTRA CHECK: Verify against activePolicyIRIs cache
+        // ✅ STRICT CHECK 2: Verify against activePolicyIRIs cache
         if (!activePolicyIRIs.has(cleanFieldIRI) && !activePolicyIRIs.has(cleanIRI(policy.resource || ''))) {
           console.log(`⏭️ Skipping violation logging: ${cleanFieldIRI} not in activePolicyIRIs`);
           continue;
@@ -1164,7 +1170,6 @@ http.createServer(async (req, res) => {
   for await (const c of req) body += c;
 
   // 🔐 ENSURE POLICY IS UP TO DATE (WITH CACHE)
-  // Sync only if cache is stale, avoid lock contention
   if (isAuthenticated(headers) && pod && isValidPodName(pod)) {
     await ensurePolicyDeployed(pod, headers.authorization);
   }
@@ -1247,7 +1252,7 @@ http.createServer(async (req, res) => {
   await loadPolicies();
   
   // ✅ RESET counter untuk development/debugging
-  accessCounter.resetPod('ahmadb');
+  accessCounter.resetPod('amd'); // Sesuaikan dengan pod name Anda
   console.log('✅ Access counter reset - Count starts from 0');
   
   // ✅ FIX: Semua console.log dengan string yang ditutup dengan benar
