@@ -132,7 +132,7 @@ function parsePolicyMetadata(ttlContent) {
       title: null,
       description: null,
       target: null,
-      active: true, // Default: true
+      active: true,
       maxCount: 3
     };
 
@@ -792,6 +792,7 @@ ex:${handlingBundleId} a prov:Bundle ;
     dct:title "Personal Data Handling Context" ;
     prov:wasGeneratedBy ex:${accessId} .
 ex:${accessId} <https://w3id.org/force/compliance-report#hasHandlingBundle> ex:${handlingBundleId} .
+
 ex:handling-${Date.now()} a dpv:PersonalDataHandling ;
     dpv:hasProcessing ${method === "GET" ? "dpv:Access" : "dpv:Create"} ;
     dpv:hasDataSubject ex:pod-owner ;
@@ -811,6 +812,7 @@ ex:${fieldsBundleId} a prov:Bundle ;
     prov:wasGeneratedBy ex:${accessId} .
 ex:${accessId} <https://w3id.org/force/compliance-report#hasFieldsBundle> ex:${fieldsBundleId} .
 `;
+
   if (personalData?.fields?.length > 0) {
     personalData.fields.forEach((fieldIRI, idx) => {
       const fieldId = `field-${Date.now()}-${idx}`;
@@ -821,6 +823,7 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasFieldsBundle> ex:${f
       const dataCategory = fieldConfig?.dataCategory || "dpv:PersonalData";
       const personalDataType = fieldConfig?.personalData || "dpv:Data";
       const cleanFieldIRI = cleanIRI(fieldIRI);
+
       ttl += `# Field[${idx+1}]: ${fieldLabel}
 ex:${fieldId} a <https://w3id.org/force/compliance-report#AccessedDataField> ;
     <https://w3id.org/force/compliance-report#fieldIRI> ${cleanFieldIRI} ;
@@ -852,13 +855,13 @@ ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .
     if (fieldConfig?.protectedByPolicy) {
       const policyKey = fieldConfig.protectedByPolicy;
       const policy = policyEngine.getPolicy?.(policyKey) || getDefaultPolicies()[policyKey];
-      
+
       // ✅ FIX: Skip logging if policy is inactive
       if (policy && !policy.active) {
         console.log(`⏭️ Skipping logging for INACTIVE policy: ${policy.title || policyKey}`);
         continue;
       }
-      
+
       if (policy) {
         const policyEvalId = `policy-eval-${Date.now()}-${evaluatedPolicies.length}`;
         const policyResource = cleanIRI(policy.resource || `ex:policy-${policyKey}`);
@@ -866,7 +869,7 @@ ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .
         const aliasResource = `ex:policy-${policyKey}-default`;
         const reasonClean = violationType || (decision.reason ? decision.reason.split(':')[0] : 'N/A');
         const targetAssetIRI = cleanIRI(fieldConfig.asset);
-        
+
         ttl += `ex:${policyEvalId} a <https://w3id.org/force/compliance-report#PolicyEvaluation> ;
     <https://w3id.org/force/compliance-report#evaluatedPolicy> ${aliasResource} ;
     <https://w3id.org/force/compliance-report#evaluationResult> "${decisionStr}" ;
@@ -909,6 +912,12 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${p
   // ─────────────────────────────────────────
   if (!decision.permitted && violationType) {
     const violationBundleId = `violation-bundle-${Date.now()}`;
+    ttl += `# ===== SUBGRAPH: Violation Details =====
+ex:${violationBundleId} a prov:Bundle ;
+    dct:title "Policy Violation Context" ;
+    prov:wasGeneratedBy ex:${accessId} .
+ex:${accessId} <https://w3id.org/force/compliance-report#hasViolationBundle> ex:${violationBundleId} .
+`;
     const violationId = `violation-${Date.now()}`;
     const trulyViolatedPolicyAliases = [];
 
@@ -921,18 +930,18 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${p
         const observedCount = countData.count;
         const policy = policyEngine.getPolicy?.(fieldConfig.protectedByPolicy) || getDefaultPolicies()[fieldConfig.protectedByPolicy];
         const limit = policy?.permission?.constraint?.rightOperand || 3;
-        
+
         // ✅ FIX: Skip violation logging if policy is inactive
         if (policy && !policy.active) {
           console.log(`⏭️ Skipping violation logging for INACTIVE policy: ${policy.title || fieldConfig.protectedByPolicy}`);
           continue;
         }
-        
+
         if (observedCount > limit) {
           const fieldViolationId = `field-violation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           const policyAlias = `ex:policy-${fieldConfig.protectedByPolicy}-default`;
           const cleanPolicyAlias = cleanIRI(policyAlias);
-          
+
           ttl += `ex:${violationId} <https://w3id.org/force/compliance-report#hasFieldViolation> ex:${fieldViolationId} .
 ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolation> ;
     <https://w3id.org/force/compliance-report#violatedField> ${cleanFieldIRI} ;
@@ -950,12 +959,7 @@ ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolatio
     // Only write violation bundle if there are violations
     if (trulyViolatedPolicyAliases.length > 0) {
       const violatedPoliciesStr = trulyViolatedPolicyAliases.join(', ');
-      ttl += `# ===== SUBGRAPH: Violation Details =====
-ex:${violationBundleId} a prov:Bundle ;
-    dct:title "Policy Violation Context" ;
-    prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} <https://w3id.org/force/compliance-report#hasViolationBundle> ex:${violationBundleId} .
-ex:${violationId} a <https://w3id.org/force/compliance-report#PolicyViolation> ;
+      ttl += `ex:${violationId} a <https://w3id.org/force/compliance-report#PolicyViolation> ;
     <https://w3id.org/force/compliance-report#violationType> "${violationType}" ;
     <https://w3id.org/force/compliance-report#violationTimestamp> "${timestamp}"^^xsd:dateTime ;
     <https://w3id.org/force/compliance-report#belongsToBundle> ex:${violationBundleId} ;
@@ -970,7 +974,7 @@ ex:${violationBundleId} prov:hadMember ex:${violationId} .
   // ✅ Console logging
   const status = decision.permitted ? "✅ ACCESS ALLOWED" : "⚠️ POLICY VIOLATION";
   const fields = sensitiveFields.length > 0 ? sensitiveFields.join(', ') : 'none';
-  
+
   if (!decision.permitted && violationType) {
     const violationDetails = [];
     for (const field of sensitiveFields) {
@@ -982,10 +986,10 @@ ex:${violationBundleId} prov:hadMember ex:${violationId} .
         const observedCount = countData.count;
         const policy = policyEngine.getPolicy?.(fieldConfig.protectedByPolicy) || getDefaultPolicies()[fieldConfig.protectedByPolicy];
         const limit = policy?.permission?.constraint?.rightOperand || 3;
-        
+
         // Skip inactive policies in violation details
         if (policy && !policy.active) continue;
-        
+
         if (observedCount > limit) {
           violationDetails.push(`${policy?.title || fieldConfig.protectedByPolicy} (${fieldConfig.assetLabel}: ${observedCount} > ${limit})`);
         }
@@ -1002,7 +1006,7 @@ ex:${violationBundleId} prov:hadMember ex:${violationId} .
       : '';
     console.log(`${status} | App: ${app} | Fields: ${fields} ${policyRef} | Reason: ${decision.reason}`);
   }
-  
+
   if (personalData) {
     console.log(`   📊 Data: ${personalData.sensitiveFields.length} sensitif, ${personalData.nonSensitiveFields.length} non-sensitif`);
   }
@@ -1136,11 +1140,11 @@ http.createServer(async (req, res) => {
   proxy.end();
 }).listen(GATEWAY_PORT, async () => {
   await loadPolicies();
-  
+
   // ✅ RESET counter untuk development/debugging
   accessCounter.resetPod('ayobisa2');
   console.log('✅ Access counter reset - Count starts from 0');
-  
+
   // ✅ FIX: Semua console.log dengan string yang ditutup dengan benar
   console.log(`✅ Solid Gateway with ODRL (MONITORING MODE) @ ${GATEWAY_BASE}`);
   console.log('📊 Multi-Policy Support: bloodType (limit=1), identity (limit=3)');
@@ -1150,7 +1154,7 @@ http.createServer(async (req, res) => {
   console.log('📝 Research-Grade RDF: Prefix once, targetAsset as full IRI, violatedPolicy consistent with FieldViolation');
   console.log('🌍 State of the World: currentTime, count, location (sesuai paper sibb.pdf)');
   console.log(`💾 Access Counter: ${accessCounter.getStats().totalEntries} entries`);
-  
+
   console.log('');
   console.log('🎯 Test Sequence:');
   console.log('   1x bloodType → ALLOWED (count=1, limit=1) + SotW updated');
