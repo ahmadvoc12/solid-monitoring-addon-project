@@ -28,7 +28,7 @@ const POLICY_ACL_PATH = "private/audit/access/monitor-policy.ttl.acl";
 /* ===============================
 ✅ GLOBAL CACHE: Track active policy IRIs per pod
 ================================ */
-const activePolicyCache = new Map(); // { podName: { policies, activePolicyIRIs, lastSync } }
+const activePolicyCache = new Map();
 
 /* ===============================
 SENSITIVE FIELD CONFIGURATION
@@ -60,7 +60,7 @@ const NON_SENSITIVE_FIELDS = {
 };
 
 /* ===============================
-✅ HELPER FUNCTIONS - ROBUST IRI CLEANING
+✅ HELPER FUNCTIONS
 ================================ */
 function cleanIRI(iri) {
   if (!iri || typeof iri !== 'string') return iri || '';
@@ -134,27 +134,26 @@ function parsePolicyMetadata(ttlContent) {
       active: true,
       maxCount: 3
     };
-
+    
     const resourceMatch = ttlContent.match(/(ex:policy-[^\s;]+)\s+a\s+odrl:Policy/);
     if (resourceMatch?.[1]) metadata.resource = cleanIRI(resourceMatch[1]);
-
+    
     const idMatch = ttlContent.match(/dct:identifier\s+"(urn:uuid:[^"]+)"/);
     if (idMatch?.[1]) metadata.identifier = idMatch[1];
-
+    
     const titleMatch = ttlContent.match(/dct:title\s+"([^"]+)"/);
     if (titleMatch?.[1]) metadata.title = titleMatch[1];
-
+    
     const descMatch = ttlContent.match(/dct:description\s+"([^"]+)"/);
     if (descMatch?.[1]) metadata.description = descMatch[1];
-
+    
     const targetMatch = ttlContent.match(/odrl:target\s+<([^>]+)>/);
     if (targetMatch?.[1]) metadata.target = cleanIRI(targetMatch[1]);
-
+    
     // ✅ Handle: "true"^^xsd:boolean, "false", false, true, with/without spaces
     const activeMatch = ttlContent.match(
       /<https:\/\/w3id\.org\/force\/compliance-report#policyActive\s*>?\s*("?[^"]+"?\^\^xsd:boolean|true|false)/i
     );
-    
     if (activeMatch?.[1]) {
       const val = activeMatch[1]
         .replace(/"/g, '')
@@ -164,12 +163,12 @@ function parsePolicyMetadata(ttlContent) {
       metadata.active = val === 'true';
       console.log(`🔍 Parsed policyActive: "${activeMatch[1].trim()}" → ${metadata.active}`);
     }
-
+    
     const countMatch = ttlContent.match(
       /odrl:leftOperand\s+odrl:count[\s\S]*?odrl:rightOperand\s+"?(\d+)"?\^\^xsd:integer/
     );
     if (countMatch?.[1]) metadata.maxCount = parseInt(countMatch[1], 10);
-
+    
     return metadata;
   } catch (error) {
     console.error(`❌ Error parsing policy meta`, error.message);
@@ -224,20 +223,23 @@ ex:policy-blood-type-4579e3c3af6546af9b28c6bf72890416 a odrl:Policy ;
     odrl:profile <https://w3id.org/dpv/odrl> ;
     odrl:target <https://schema.org/bloodType> ;
     <https://w3id.org/force/compliance-report#policyActive> "true"^^xsd:boolean ;
-    odrl:permission [
-        odrl:assigner ex:pod-owner ;
-        odrl:assignee ex:any-app ;
-        odrl:action odrl:read ;
-        odrl:constraint [
-            odrl:leftOperand odrl:count ;
-            odrl:operator odrl:lteq ;
-            odrl:rightOperand "1"^^xsd:integer
-        ]
-    ] ;
-    odrl:prohibition [
-        odrl:action odrl:distribute ;
-        odrl:assignee ex:any-app
-    ] .
+    odrl:permission _:b752_n3-abc1-permission ;
+    odrl:prohibition _:b752_n3-abc1-prohibition .
+
+_:b752_n3-abc1-permission
+    odrl:assigner ex:pod-owner ;
+    odrl:assignee ex:any-app ;
+    odrl:action odrl:read ;
+    odrl:constraint _:b752_n3-abc1-constraint .
+
+_:b752_n3-abc1-prohibition
+    odrl:assignee ex:any-app ;
+    odrl:action odrl:distribute .
+
+_:b752_n3-abc1-constraint
+    odrl:leftOperand odrl:count ;
+    odrl:operator odrl:lteq ;
+    odrl:rightOperand "1"^^xsd:integer .
 
 # ===== POLICY 2: Identity Access =====
 ex:policy-identity-92c9be5f4abc4654972a93ccbac0082e a odrl:Policy ;
@@ -249,20 +251,23 @@ ex:policy-identity-92c9be5f4abc4654972a93ccbac0082e a odrl:Policy ;
     odrl:profile <https://w3id.org/dpv/odrl> ;
     odrl:target <https://schema.org/identifier> ;
     <https://w3id.org/force/compliance-report#policyActive> "true"^^xsd:boolean ;
-    odrl:permission [
-        odrl:assigner ex:pod-owner ;
-        odrl:assignee ex:any-app ;
-        odrl:action odrl:read ;
-        odrl:constraint [
-            odrl:leftOperand odrl:count ;
-            odrl:operator odrl:lteq ;
-            odrl:rightOperand "3"^^xsd:integer
-        ]
-    ] ;
-    odrl:prohibition [
-        odrl:action odrl:distribute ;
-        odrl:assignee ex:any-app
-    ] .
+    odrl:permission _:b752_n3-def2-permission ;
+    odrl:prohibition _:b752_n3-def2-prohibition .
+
+_:b752_n3-def2-permission
+    odrl:assigner ex:pod-owner ;
+    odrl:assignee ex:any-app ;
+    odrl:action odrl:read ;
+    odrl:constraint _:b752_n3-def2-constraint .
+
+_:b752_n3-def2-prohibition
+    odrl:assignee ex:any-app ;
+    odrl:action odrl:distribute .
+
+_:b752_n3-def2-constraint
+    odrl:leftOperand odrl:count ;
+    odrl:operator odrl:lteq ;
+    odrl:rightOperand "3"^^xsd:integer .
 `;
 
 /* ===============================
@@ -377,17 +382,20 @@ async function deployPolicyToPod(podBaseUrl, authToken) {
   console.log(`🔍 Deploying policy to pod: ${podBaseUrl}`);
   const policyUrl = new URL(POLICY_PATH, podBaseUrl).href;
   console.log(`📄 Policy URL: ${policyUrl}`);
+  
   try {
     const headRes = await fetchWithTimeout(policyUrl, {
       method: 'HEAD',
       headers: { 'Authorization': authToken, 'Accept': 'text/turtle' }
     }, 3000);
     console.log(`📡 HEAD response: ${headRes.status}`);
+    
     if (headRes.status === 200 || headRes.status === 204) {
       console.log(`✅ Policy already exists at ${policyUrl}`);
       await createPolicyACLRemote(podBaseUrl, authToken);
       return { deployed: false, url: policyUrl, reason: 'already_exists' };
     }
+    
     console.log(`📤 PUT ${policyUrl}`);
     const putRes = await fetchWithTimeout(policyUrl, {
       method: 'PUT',
@@ -399,12 +407,14 @@ async function deployPolicyToPod(podBaseUrl, authToken) {
       },
       body: MONITOR_POLICIES_TTL
     }, 5000);
+    
     console.log(`📥 PUT response: ${putRes.status}`);
     if (!putRes.ok) {
       const errText = await putRes.text().catch(() => 'No error body');
       console.error(`❌ PUT failed: ${putRes.status} - ${errText}`);
       throw new Error(`Failed to deploy policy: ${putRes.status} ${errText}`);
     }
+    
     await createPolicyACLRemote(podBaseUrl, authToken);
     console.log(`✅ Policy deployed successfully to ${policyUrl}`);
     return { deployed: true, url: policyUrl, status: putRes.status };
@@ -450,13 +460,12 @@ async function loadPolicyFromPod(podBaseUrl, authToken) {
 async function loadPolicies(podName = null, authToken = null, forceRefresh = false) {
   const now = Date.now();
   const cached = activePolicyCache.get(podName);
-  
   if (cached && !forceRefresh && (now - cached.lastSync < 5 * 60 * 1000)) {
     console.log(`♻️ Using cached policies for ${podName} (age: ${Math.round((now - cached.lastSync)/1000)}s)`);
     policyEngine.loadPolicies(cached.policies);
     return cached.policies;
   }
-
+  
   let policies = {};
   const activePolicyIRIs = new Set();
   
@@ -487,7 +496,6 @@ async function loadPolicies(podName = null, authToken = null, forceRefresh = fal
       
       for (const block of policyBlocks) {
         const metadata = parsePolicyMetadata(block);
-        
         if (!metadata.active) {
           console.log(`⏭️ Policy INACTIVE (skipped from engine): ${metadata.title || metadata.target}`);
           continue;
@@ -605,15 +613,13 @@ function buildPodBaseUrl(podName) {
 
 async function ensurePolicyDeployed(podName, authToken) {
   if (!isValidPodName(podName)) return false;
-  
   if (deployedPods.has(podName)) {
     loadPolicies(podName, authToken, false).catch(e => console.log(`ℹ️ Cache refresh skipped: ${e.message}`));
     return true;
   }
-  
   if (deployingPods.has(podName)) return true;
-  deployingPods.add(podName);
   
+  deployingPods.add(podName);
   (async () => {
     try {
       const podBaseUrl = buildPodBaseUrl(podName);
@@ -664,7 +670,6 @@ const extractAppName = pathname => {
   const idx = seg.indexOf("public");
   return idx !== -1 && seg[idx + 1] ? seg[idx + 1] : "unknown-app";
 };
-
 const isAuthenticated = h => !!h.authorization;
 const isSystem = p =>
   p.startsWith("/.well-known") ||
@@ -707,14 +712,17 @@ function extractPersonalData(rdf) {
     sensitive: false, sensitiveFields: [], nonSensitiveFields: []
   };
   if (!rdf || typeof rdf !== "string") return result;
+  
   rdf.match(/<https?:\/\/[^>]+>\s+"([^"]+)"/g)?.forEach(m => {
     const match = m.match(/<(https?:\/\/[^>]+)>\s+"([^"]+)"/);
     if (!match) return;
     const iri = match[1];
     const value = match[2];
     const normalizedIRI = normalizeField(`<${iri}>`);
+    
     result.fields.push(normalizedIRI);
     result.values.push(value);
+    
     if (SENSITIVE_FIELDS[normalizedIRI]) {
       result.personalData.push(SENSITIVE_FIELDS[normalizedIRI].personalData);
       result.dataCategories.push(SENSITIVE_FIELDS[normalizedIRI].dataCategory);
@@ -724,6 +732,7 @@ function extractPersonalData(rdf) {
       result.nonSensitiveFields.push(normalizedIRI);
     }
   });
+  
   return result;
 }
 
@@ -787,25 +796,40 @@ ex:sotw-current a sotw:SotW ;
 }
 
 /* ===============================
-✅ UPDATE SOTW
+✅ UPDATE SOTW - Hanya update jika ada perubahan data
 ================================ */
 async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED") {
   const sotwFile = await ensureSotWFile(pod);
   let content = await fs.readFile(sotwFile, 'utf-8');
   const now = new Date().toISOString();
-  content = content.replace(
-    /(sotw:currentTime\s+")[^"]+("^^xsd:dateTime)/,
-    `$1${now}$2`
-  );
+  let hasChanges = false;
+  
   if (countData && field) {
     const cleanFieldIRI = cleanIRI(field);
+    // Escape special regex characters in IRI
+    const escapedIRI = cleanFieldIRI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    // Regex untuk mencari count yang sudah ada untuk field ini
     const countRegex = new RegExp(
-      `(odrl:target\\s+${cleanFieldIRI.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;\\s*sotw:countValue\\s+")[^"]+("^^xsd:integer)`,
+      `(odrl:target\\s+${escapedIRI}\\s*;\\s*sotw:countValue\\s+")[^"]+("^^xsd:integer)`,
       'g'
     );
-    if (countRegex.test(content)) {
-      content = content.replace(countRegex, `$1${countData.count}$2`);
+    
+    const match = content.match(countRegex);
+    if (match) {
+      // Field sudah ada, cek apakah nilai count berubah
+      const currentCountMatch = match[0].match(/sotw:countValue\s+"(\d+)"/);
+      const currentCount = currentCountMatch?.[1];
+      
+      if (currentCount !== String(countData.count)) {
+        // Count berubah, update nilai
+        content = content.replace(countRegex, `$1${countData.count}$2`);
+        hasChanges = true;
+        console.log(`📊 SotW count updated: ${cleanFieldIRI} ${currentCount} → ${countData.count}`);
+      }
+      // Jika count sama, tidak perlu update apa pun
     } else {
+      // Field baru, tambahkan block count baru
       const countBlock = `
 ex:sotw-current sotw:count [
     a sotw:Count ;
@@ -813,15 +837,27 @@ ex:sotw-current sotw:count [
     odrl:target ${cleanFieldIRI}
 ] .`;
       content += countBlock;
+      hasChanges = true;
+      console.log(`🆕 SotW new field added: ${cleanFieldIRI}`);
     }
   }
-  await fs.writeFile(sotwFile, content);
-  console.log(`🌍 SotW updated (${decision}): ${field || 'none'} | Count: ${countData?.count || 'N/A'}`);
+  
+  // Hanya tulis file jika ada perubahan data
+  if (hasChanges) {
+    // Update timestamp karena data berubah
+    content = content.replace(
+      /(sotw:currentTime\s+")[^"]+("^^xsd:dateTime)/,
+      `$1${now}$2`
+    );
+    await fs.writeFile(sotwFile, content);
+    console.log(`🌍 SotW updated (${decision}): ${field || 'none'} | Count: ${countData?.count || 'N/A'}`);
+  } else {
+    console.log(`ℹ️ SotW unchanged (${decision}): ${field || 'none'} - no data changes`);
+  }
 }
 
 /* ===============================
 ✅✅✅ WRITE ACCESS LOG - FIX: Skip ALL logging if policy inactive
-✅ FIX: Collect violations FIRST, then write bundle ONLY if there are valid violations
 ================================ */
 async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields,
   violationType = null, personalData = null, method = "GET", resource = "",
@@ -834,7 +870,7 @@ async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields,
   const timestamp = new Date().toISOString();
   const app = evalRequest?.appName || resource.split('/').filter(Boolean)[2] || "unknown";
   const decisionStr = decision.permitted ? "ALLOWED" : "VIOLATION";
-
+  
   let ttl = `# ===== ROOT: Access Record ${accessId} =====
 ex:${accessId} a prov:Activity ;
     prov:startedAtTime "${timestamp}"^^xsd:dateTime ;
@@ -874,6 +910,7 @@ ex:${fieldsBundleId} a prov:Bundle ;
     prov:wasGeneratedBy ex:${accessId} .
 ex:${accessId} <https://w3id.org/force/compliance-report#hasFieldsBundle> ex:${fieldsBundleId} .
 `;
+
   if (personalData?.fields?.length > 0) {
     personalData.fields.forEach((fieldIRI, idx) => {
       const fieldId = `field-${Date.now()}-${idx}`;
@@ -884,6 +921,7 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasFieldsBundle> ex:${f
       const dataCategory = fieldConfig?.dataCategory || "dpv:PersonalData";
       const personalDataType = fieldConfig?.personalData || "dpv:Data";
       const cleanFieldIRI = cleanIRI(fieldIRI);
+      
       ttl += `# Field[${idx+1}]: ${fieldLabel}
 ex:${fieldId} a <https://w3id.org/force/compliance-report#AccessedDataField> ;
     <https://w3id.org/force/compliance-report#fieldIRI> ${cleanFieldIRI} ;
@@ -911,7 +949,7 @@ ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .
   const evaluatedPolicies = [];
   const cached = activePolicyCache.get(pod);
   const activePolicyIRIs = cached?.activePolicyIRIs || new Set();
-
+  
   for (const field of sensitiveFields) {
     const fieldConfig = getFieldConfig(field);
     if (fieldConfig?.protectedByPolicy) {
@@ -950,6 +988,7 @@ ex:${policyBundleId} prov:hadMember ex:${policyEvalId} .
 `;
       ttl += createPolicyAliasMapping(aliasResource, policyResource, policyUUID) + `
 `;
+      
       evaluatedPolicies.push({
         resource: policyResource,
         alias: aliasResource,
@@ -962,7 +1001,7 @@ ex:${policyBundleId} prov:hadMember ex:${policyEvalId} .
       });
     }
   }
-
+  
   // ✅ ONLY write policy bundle header if there are evaluations
   if (evaluatedPolicies.length > 0) {
     ttl = `# ===== SUBGRAPH: Policy Evaluation Context =====
@@ -976,6 +1015,7 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${p
   // ─────────────────────────────────────────
   // 📦 SUBGRAPH: Violation Details
   // ✅ FIX: COLLECT violations FIRST, write bundle ONLY if there are valid ones
+  // ✅ FIX: Check policyActive from TTL before logging violation
   // ─────────────────────────────────────────
   const violationEntries = []; // Collect valid violations first
   
@@ -989,18 +1029,27 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${p
         const policy = policyEngine.getPolicy?.(fieldConfig.protectedByPolicy);
         const limit = policy?.permission?.constraint?.rightOperand || 3;
         
-        // ✅ SKIP if policy not in engine OR not active
+        // ✅ SKIP if policy not in engine OR not active (cached check)
         if (!policy || !policy.active) {
-          console.log(`⏭️ Skipping violation logging: Policy ${fieldConfig.protectedByPolicy} not active`);
+          console.log(`⏭️ Skipping violation logging: Policy ${fieldConfig.protectedByPolicy} not active (cached)`);
+          continue;
+        }
+        
+        // ✅ DOUBLE-CHECK: Read TTL to confirm policyActive = true
+        const policyResource = policy.resource || `ex:policy-${fieldConfig.protectedByPolicy}`;
+        const isActiveInTTL = await isPolicyActiveInTTL(pod, policyResource);
+        if (!isActiveInTTL) {
+          console.log(`⏭️ Skipping violation logging: Policy ${policyResource} has policyActive=false in TTL`);
           continue;
         }
         
         // ✅ SKIP if field IRI not in activePolicyIRIs cache
-        if (!activePolicyIRIs.has(cleanFieldIRI) && !activePolicyIRIs.has(cleanIRI(policy.resource || ''))) {
-          console.log(`⏭️ Skipping violation logging: ${cleanFieldIRI} not in activePolicyIRIs`);
+        if (!activePolicyIRIs.has(cleanFieldIRI) && !activePolicyIRIs.has(cleanIRI(policyResource))) {
+          console.log(`⏭️ Skipping violation logging: ${cleanFieldIRI} not in activePolicyIRIs cache`);
           continue;
         }
         
+        // Hanya log violation jika observedCount > limit
         if (observedCount > limit) {
           violationEntries.push({
             fieldIRI: cleanFieldIRI,
@@ -1014,7 +1063,7 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${p
       }
     }
   }
-
+  
   // ✅ ONLY write violation bundle if there are valid violations
   if (violationEntries.length > 0) {
     const violationBundleId = `violation-bundle-${Date.now()}`;
@@ -1037,7 +1086,6 @@ ex:${violationBundleId} prov:hadMember ex:${violationId} .
     violationEntries.forEach(entry => {
       const fieldViolationId = `field-violation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const cleanPolicyAlias = cleanIRI(entry.policyAlias);
-      
       ttl += `ex:${violationId} <https://w3id.org/force/compliance-report#hasFieldViolation> ex:${fieldViolationId} .
 ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolation> ;
     <https://w3id.org/force/compliance-report#violatedField> ${entry.fieldIRI} ;
@@ -1047,15 +1095,15 @@ ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolatio
 `;
     });
   }
-
+  
   await fs.appendFile(logFile, ttl);
-
+  
   // ✅ Console logging
   const status = decision.permitted ? "✅ ACCESS ALLOWED" : "⚠️ POLICY VIOLATION";
   const fields = sensitiveFields.length > 0 ? sensitiveFields.join(', ') : 'none';
   
   if (!decision.permitted && violationType && violationEntries.length > 0) {
-    const violationDetails = violationEntries.map(v => 
+    const violationDetails = violationEntries.map(v =>
       `${v.policyTitle} (${v.assetLabel}: ${v.observedCount} > ${v.limit})`
     );
     console.log(`${status} | App: ${app} | Fields: ${fields} | VIOLATED: ${violationDetails.join(', ')}`);
@@ -1070,6 +1118,48 @@ ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolatio
   
   if (personalData) {
     console.log(`   📊 Data: ${personalData.sensitiveFields.length} sensitif, ${personalData.nonSensitiveFields.length} non-sensitif`);
+  }
+}
+
+/* ===============================
+✅ HELPER: Check policyActive dari TTL content
+================================ */
+async function isPolicyActiveInTTL(pod, policyResource) {
+  try {
+    const policyFile = path.join(DATA_ROOT, pod, POLICY_PATH);
+    const ttlContent = await fs.readFile(policyFile, 'utf-8');
+    
+    // Cari block policy untuk resource ini
+    const cleanResource = cleanIRI(policyResource);
+    const policyBlockRegex = new RegExp(
+      `(${cleanResource}\\s+a\\s+odrl:Policy[\\s\\S]*?)(?=ex:policy-|@prefix|$)`,
+      'i'
+    );
+    const blockMatch = ttlContent.match(policyBlockRegex);
+    
+    if (blockMatch?.[1]) {
+      const block = blockMatch[1];
+      // Cek predicate policyActive dengan berbagai format
+      const activeMatch = block.match(
+        /<https:\/\/w3id\.org\/force\/compliance-report#policyActive\s*>?\s*("?[^"]+"?\^\^xsd:boolean|true|false)/i
+      );
+      if (activeMatch?.[1]) {
+        const val = activeMatch[1]
+          .replace(/"/g, '')
+          .replace(/\^\^xsd:boolean/i, '')
+          .trim()
+          .toLowerCase();
+        const isActive = val === 'true';
+        console.log(`🔍 Policy ${cleanResource} policyActive: ${isActive}`);
+        return isActive;
+      }
+    }
+    // Default ke true jika predicate tidak ditemukan
+    console.log(`⚠️ policyActive not found for ${cleanResource}, defaulting to true`);
+    return true;
+  } catch (error) {
+    console.warn(`⚠️ Could not check policy active status for ${policyResource}: ${error.message}`);
+    return true; // Default allow logging jika check gagal
   }
 }
 
@@ -1112,19 +1202,22 @@ GATEWAY SERVER (MONITORING MODE)
 ================================ */
 http.createServer(async (req, res) => {
   const { method, url, headers } = req;
+  
   if (method === "GET" && (url === "/" || url === "/health")) {
     res.writeHead(200, { "Content-Type": "text/plain" });
     return res.end("OK");
   }
+  
   const target = new URL(url, GATEWAY_BASE);
   const pod = detectPod(target.pathname);
+  
   let body = "";
   for await (const c of req) body += c;
-
+  
   if (isAuthenticated(headers) && pod && isValidPodName(pod)) {
     await ensurePolicyDeployed(pod, headers.authorization);
   }
-
+  
   const proxy = http.request({
     hostname: "127.0.0.1",
     port: CSS_PORT,
@@ -1134,14 +1227,14 @@ http.createServer(async (req, res) => {
   }, async pres => {
     let resp = "";
     for await (const c of pres) resp += c;
-
+    
     if (method === "GET" && isAuthenticated(headers) && !isSystem(target.pathname)) {
       try {
         const sensitiveFields = extractSensitiveFields(resp);
         if (sensitiveFields.length > 0) {
           const evalRequest = requestBuilder.buildFromHttpRequest(req, target.pathname, pod);
           const app = extractAppName(target.pathname);
-
+          
           for (const fld of sensitiveFields) {
             if (isSensitiveField(fld)) {
               const normalizedField = normalizeField(fld);
@@ -1152,23 +1245,23 @@ http.createServer(async (req, res) => {
               }
             }
           }
-
+          
           const sotw = await buildSotWWithCount(pod, evalRequest, target.pathname, sensitiveFields);
           const decisionResult = policyEngine.evaluate(evalRequest, sotw, sensitiveFields);
           const personalData = extractPersonalData(resp);
-
+          
           for (const field of sensitiveFields) {
             const cleanFieldIRI = cleanIRI(field);
             const countData = accessCounter.get(pod, app, cleanFieldIRI) || { count: 0 };
             await updateSotW(pod, app, cleanFieldIRI, countData, decisionResult.permitted ? "ALLOWED" : "VIOLATION");
           }
-
+          
           await writeAccessLog({
             pod, evalRequest, decision: decisionResult, sensitiveFields,
             violationType: decisionResult.violatedConstraints[0]?.violationType,
             personalData, method, resource: `${GATEWAY_BASE}${target.pathname}`
           });
-
+          
           if (!decisionResult.permitted) {
             console.log('⚠️ POLICY VIOLATION DETECTED (access allowed):', decisionResult.reason);
           }
@@ -1177,11 +1270,11 @@ http.createServer(async (req, res) => {
         console.error('⚠️ ODRL evaluation skipped (response):', error.message);
       }
     }
-
+    
     res.writeHead(pres.statusCode, pres.headers);
     res.end(resp);
   });
-
+  
   proxy.on('error', (err) => {
     console.error('❌ Proxy error:', err.message);
     if (!res.headersSent) {
@@ -1189,9 +1282,10 @@ http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: "Bad Gateway", message: err.message }));
     }
   });
-
+  
   if (body) proxy.write(body);
   proxy.end();
+  
 }).listen(GATEWAY_PORT, async () => {
   await loadPolicies();
   accessCounter.resetPod('amd');
