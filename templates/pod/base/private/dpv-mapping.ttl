@@ -1,17 +1,17 @@
 @prefix dpv:  <https://w3id.org/dpv#> .
-@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix dct: <http://purl.org/dc/terms/> .
 @prefix ex:   <https://example.org/privacy#> .
 
 schema:identifier
   a dpv:PersonalData ;
-  skos:prefLabel "Identifying Personal Data"@en ;
+  dct:description "Identifying Personal Data"@en ;
   dpv:hasPersonalData dpv:IdentifyingPersonalData ;
   dpv:hasDataCategory dpv:SensitivePersonalData ;
   ex:domain "identity" .
 
 schema:bloodType
   a dpv:PersonalData ;
-  skos:prefLabel "Blood Type"@en ;
+  dct:description "Blood Type"@en ;
   dpv:hasPersonalData dpv:PersonalData ;
   dpv:hasDataCategory dpv:SpecialCategoryPersonalData ;
   ex:domain "health" .
