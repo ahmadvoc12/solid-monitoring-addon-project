@@ -2,14 +2,14 @@
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix ex:   <https://example.org/privacy#> .
 
-ex:identifier
+schema:identifier
   a dpv:PersonalData ;
   skos:prefLabel "Identifying Personal Data"@en ;
   dpv:hasPersonalData dpv:IdentifyingPersonalData ;
   dpv:hasDataCategory dpv:SensitivePersonalData ;
   ex:domain "identity" .
 
-ex:bloodType
+schema:bloodType
   a dpv:PersonalData ;
   skos:prefLabel "Blood Type"@en ;
   dpv:hasPersonalData dpv:PersonalData ;
