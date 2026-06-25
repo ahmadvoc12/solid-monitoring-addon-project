@@ -302,6 +302,55 @@ function sanitizeTurtleLiteral(str) {
     .replace(/\t/g, '\\t');
 }
 
+/* ======================================================
+   ✅ NEW: IRI FORMATTING HELPERS
+   Convert full IRIs to valid Turtle syntax (prefixed or <IRI>)
+====================================================== */
+function iriToTurtle(iri) {
+  const clean = cleanIRI(iri);
+  if (!clean) return '""';
+  
+  if (clean.startsWith('https://schema.org/')) {
+    return `schema:${clean.replace('https://schema.org/', '')}`;
+  }
+  if (clean.startsWith('http://purl.org/dc/terms/')) {
+    return `dct:${clean.replace('http://purl.org/dc/terms/', '')}`;
+  }
+  if (clean.startsWith('https://w3id.org/dpv#')) {
+    return `dpv:${clean.replace('https://w3id.org/dpv#', '')}`;
+  }
+  if (clean.startsWith('https://w3id.org/force/compliance-report#')) {
+    return `report:${clean.replace('https://w3id.org/force/compliance-report#', '')}`;
+  }
+  if (clean.startsWith('https://example.org/')) {
+    return `ex:${clean.replace('https://example.org/', '')}`;
+  }
+  if (clean.startsWith('http://www.w3.org/ns/odrl/2/')) {
+    return `odrl:${clean.replace('http://www.w3.org/ns/odrl/2/', '')}`;
+  }
+  return `<${clean}>`;
+}
+
+function resolveDataCategory(category) {
+  const clean = cleanIRI(category);
+  if (!clean) return 'dpv:PersonalData';
+  if (clean.startsWith('dpv:')) return clean;
+  if (clean.startsWith('https://w3id.org/dpv#')) {
+    return `dpv:${clean.replace('https://w3id.org/dpv#', '')}`;
+  }
+  return `<${clean}>`;
+}
+
+function resolvePersonalDataType(pdt) {
+  const clean = cleanIRI(pdt);
+  if (!clean) return 'dpv:Data';
+  if (clean.startsWith('dpv:')) return clean;
+  if (clean.startsWith('https://w3id.org/dpv#')) {
+    return `dpv:${clean.replace('https://w3id.org/dpv#', '')}`;
+  }
+  return `<${clean}>`;
+}
+
 function createPolicyAliasMapping(aliasResource, policyResource, uuid) {
   const cleanAlias = cleanIRI(aliasResource);
   const cleanPolicy = cleanIRI(policyResource);
@@ -986,6 +1035,9 @@ function extractPersonalData(rdf) {
   return result;
 }
 
+/* ======================================================
+   ✅ FIXED: ensureAccessLogFile - with schema: and report: prefix
+====================================================== */
 async function ensureAccessLogFile(pod) {
   const dir = path.join(DATA_ROOT, pod, AUDIT_ACCESS_PATH);
   const file = path.join(dir, "access-log.ttl");
@@ -1000,6 +1052,8 @@ async function ensureAccessLogFile(pod) {
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 @prefix odrl: <http://www.w3.org/ns/odrl/2/> .
 @prefix report: <https://w3id.org/force/compliance-report#> .
+@prefix schema: <https://schema.org/> .
+@prefix force: <https://w3id.org/force/compliance-report#> .
 
 ex:access-log a prov:Collection .
 `);
@@ -1077,7 +1131,7 @@ async function updateSotW(pod, app, field, countData = null, decision = "ALLOWED
 ex:sotw-current sotw:count [
     a sotw:Count ;
     sotw:countValue "${countData.count}"^^xsd:integer ;
-    odrl:target ${cleanFieldIRI} ;
+    odrl:target <${cleanFieldIRI}> ;
     sotw:actionType "${cleanAction}"
 ] .`;
       content += countBlock;
@@ -1094,6 +1148,9 @@ ex:sotw-current sotw:count [
   }
 }
 
+/* ======================================================
+   ✅ FIXED: writeAccessLog - proper IRI formatting
+====================================================== */
 async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields,
   violationType = null, personalData = null, method = "GET", resource = "",
   policyMetadata = null, requestedAction = 'ex:read', requesterWebId = null,
@@ -1121,40 +1178,42 @@ async function writeAccessLog({ pod, evalRequest, decision, sensitiveFields,
     performanceState = "report:NotPerformed";
   }
   
+  // ✅ FIXED: Use report: prefix consistently
   let ttl = `# ===== ROOT: Access Record ${accessId} =====
-ex:${accessId} a prov:Activity, <https://w3id.org/force/compliance-report#PermissionReport> ;
+ex:${accessId} a prov:Activity, report:PermissionReport ;
     prov:startedAtTime "${timestamp}"^^xsd:dateTime ;
     prov:wasAssociatedWith ex:${app} ;
     prov:used <${resource}> ;
-    <https://w3id.org/force/compliance-report#decision> "${decisionStr}" ;
-    <https://w3id.org/force/compliance-report#accessMethod> "${method}" ;
-    <https://w3id.org/force/compliance-report#requestedAction> "${cleanIRI(requestedAction)}" ;
-    <https://w3id.org/force/compliance-report#accessedResource> <${resource}> ;
-    <https://w3id.org/force/compliance-report#activationState> ${activationState} ;
-    <https://w3id.org/force/compliance-report#attemptState> ${attemptState} ;
-    <https://w3id.org/force/compliance-report#performanceState> ${performanceState} ;
-    <https://w3id.org/force/compliance-report#deonticState> ${deonticState} .
+    report:decision "${decisionStr}" ;
+    report:accessMethod "${method}" ;
+    report:requestedAction "${cleanIRI(requestedAction)}" ;
+    report:accessedResource <${resource}> ;
+    report:activationState ${activationState} ;
+    report:attemptState ${attemptState} ;
+    report:performanceState ${performanceState} ;
+    report:deonticState ${deonticState} .
 ex:access-log prov:hadMember ex:${accessId} .
 `;
 
   if (requesterWebId) {
-    ttl += `ex:${accessId} <https://w3id.org/force/compliance-report#requesterWebID> <${cleanIRI(requesterWebId)}> .
+    ttl += `ex:${accessId} report:requesterWebID <${cleanIRI(requesterWebId)}> .
 `;
   }
 
   if (personalData && personalData.sensitive) {
     const handlingBundleId = `handling-bundle-${Date.now()}`;
+    const handlingId = `handling-${Date.now()}`;
     ttl += `# ===== SUBGRAPH: Personal Data Handling =====
 ex:${handlingBundleId} a prov:Bundle ;
     dct:title "Personal Data Handling Context" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} <https://w3id.org/force/compliance-report#hasHandlingBundle> ex:${handlingBundleId} .
-ex:handling-${Date.now()} a dpv:PersonalDataHandling ;
+ex:${accessId} report:hasHandlingBundle ex:${handlingBundleId} .
+ex:${handlingId} a dpv:PersonalDataHandling ;
     dpv:hasProcessing ${method === "GET" ? "dpv:Access" : "dpv:Create"} ;
     dpv:hasDataSubject ex:pod-owner ;
-    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${handlingBundleId} .
-ex:${handlingBundleId} prov:hadMember ex:handling-${Date.now()} .
-ex:${accessId} <https://w3id.org/force/compliance-report#hasPersonalDataHandling> ex:handling-${Date.now()} .
+    report:belongsToBundle ex:${handlingBundleId} .
+ex:${handlingBundleId} prov:hadMember ex:${handlingId} .
+ex:${accessId} report:hasPersonalDataHandling ex:${handlingId} .
 `;
   }
 
@@ -1163,7 +1222,7 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPersonalDataHandling
 ex:${fieldsBundleId} a prov:Bundle ;
     dct:title "Accessed Data Fields" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} <https://w3id.org/force/compliance-report#hasFieldsBundle> ex:${fieldsBundleId} .
+ex:${accessId} report:hasFieldsBundle ex:${fieldsBundleId} .
 `;
 
   if (personalData?.fields?.length > 0) {
@@ -1175,17 +1234,21 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasFieldsBundle> ex:${f
       const fieldLabel = fieldConfig?.assetLabel || fieldConfig?.label || "Unknown Field";
       const dataCategory = fieldConfig?.dataCategory || "dpv:PersonalData";
       const personalDataType = fieldConfig?.personalData || "dpv:Data";
-      const cleanFieldIRI = cleanIRI(fieldIRI);
+      
+      // ✅ FIXED: Use helper functions for proper IRI formatting
+      const fieldIRITurtle = iriToTurtle(fieldIRI);
+      const dataCategoryTurtle = resolveDataCategory(dataCategory);
+      const personalDataTypeTurtle = resolvePersonalDataType(personalDataType);
       
       ttl += `# Field[${idx+1}]: ${fieldLabel}
-ex:${fieldId} a <https://w3id.org/force/compliance-report#AccessedDataField> ;
-    <https://w3id.org/force/compliance-report#fieldIRI> ${cleanFieldIRI} ;
-    <https://w3id.org/force/compliance-report#fieldName> "${fieldLabel}" ;
-    <https://w3id.org/force/compliance-report#fieldValue> "${fieldValue}" ;
-    <https://w3id.org/force/compliance-report#isSensitive> "${isSensitive}"^^xsd:boolean ;
-    <https://w3id.org/force/compliance-report#dataCategory> "${dataCategory}" ;
-    <https://w3id.org/force/compliance-report#personalDataType> "${personalDataType}" ;
-    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${fieldsBundleId} ;
+ex:${fieldId} a report:AccessedDataField ;
+    report:fieldIRI ${fieldIRITurtle} ;
+    report:fieldName "${fieldLabel}" ;
+    report:fieldValue "${fieldValue}" ;
+    report:isSensitive "${isSensitive}"^^xsd:boolean ;
+    report:dataCategory ${dataCategoryTurtle} ;
+    report:personalDataType ${personalDataTypeTurtle} ;
+    report:belongsToBundle ex:${fieldsBundleId} ;
     prov:wasGeneratedBy ex:${accessId} .
 ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .
 `;
@@ -1217,12 +1280,12 @@ ex:${fieldsBundleId} prov:hadMember ex:${fieldId} .
       const reasonClean = violationType || (decision.reason ? decision.reason.split(':')[0] : 'N/A');
       const targetAssetIRI = cleanIRI(fieldConfig.asset);
       
-      ttl += `ex:${policyEvalId} a <https://w3id.org/force/compliance-report#PolicyEvaluation> ;
-    <https://w3id.org/force/compliance-report#evaluatedPolicy> ${aliasResource} ;
-    <https://w3id.org/force/compliance-report#evaluationResult> "${decisionStr}" ;
-    <https://w3id.org/force/compliance-report#evaluationReason> "${reasonClean}" ;
-    <https://w3id.org/force/compliance-report#targetAsset> <${targetAssetIRI}> ;
-    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${policyBundleId} .
+      ttl += `ex:${policyEvalId} a report:PolicyEvaluation ;
+    report:evaluatedPolicy ${aliasResource} ;
+    report:evaluationResult "${decisionStr}" ;
+    report:evaluationReason "${reasonClean}" ;
+    report:targetAsset <${targetAssetIRI}> ;
+    report:belongsToBundle ex:${policyBundleId} .
 ex:${policyBundleId} prov:hadMember ex:${policyEvalId} .
 `;
       ttl += createPolicyAliasMapping(aliasResource, policyResource, policyUUID) + `
@@ -1248,8 +1311,8 @@ ex:${policyBundleId} prov:hadMember ex:${policyEvalId} .
 ex:${policyBundleId} a prov:Bundle ;
     dct:title "ODRL Policy Evaluation" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${policyBundleId} ;
-    <https://w3id.org/force/compliance-report#rule> ${evaluatedPolicies.map(p => cleanIRI(p.resource)).join(', ')} .
+ex:${accessId} report:hasPolicyBundle ex:${policyBundleId} ;
+    report:rule ${evaluatedPolicies.map(p => cleanIRI(p.resource)).join(', ')} .
 ` + ttl;
   }
 
@@ -1314,11 +1377,11 @@ ex:${accessId} <https://w3id.org/force/compliance-report#hasPolicyBundle> ex:${p
 ex:${violationBundleId} a prov:Bundle ;
     dct:title "Policy Violation Context" ;
     prov:wasGeneratedBy ex:${accessId} .
-ex:${accessId} <https://w3id.org/force/compliance-report#hasViolationBundle> ex:${violationBundleId} .
-ex:${violationId} a <https://w3id.org/force/compliance-report#PolicyViolation> ;
-    <https://w3id.org/force/compliance-report#violationTimestamp> "${timestamp}"^^xsd:dateTime ;
-    <https://w3id.org/force/compliance-report#belongsToBundle> ex:${violationBundleId} ;
-    <https://w3id.org/force/compliance-report#violatedPolicy> ${violatedPolicyAliases.join(', ')} .
+ex:${accessId} report:hasViolationBundle ex:${violationBundleId} .
+ex:${violationId} a report:PolicyViolation ;
+    report:violationTimestamp "${timestamp}"^^xsd:dateTime ;
+    report:belongsToBundle ex:${violationBundleId} ;
+    report:violatedPolicy ${violatedPolicyAliases.join(', ')} .
 ex:${violationBundleId} prov:hadMember ex:${violationId} .
 `;
     
@@ -1326,26 +1389,30 @@ ex:${violationBundleId} prov:hadMember ex:${violationId} .
       const fieldViolationId = `field-violation-${Date.now()}-${idx}`;
       const cleanPolicyAlias = cleanIRI(entry.policyAlias);
       
-      ttl += `ex:${violationId} <https://w3id.org/force/compliance-report#hasFieldViolation> ex:${fieldViolationId} .
-ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolation> ;
-    <https://w3id.org/force/compliance-report#violatedField> ${cleanIRI(entry.fieldIRI)} ;
-    <https://w3id.org/force/compliance-report#violatedPolicy> ${cleanPolicyAlias} ;
-    <https://w3id.org/force/compliance-report#violationType> "${entry.type}" ;
-    <https://w3id.org/force/compliance-report#violationReason> "${sanitizeTurtleLiteral(entry.reason)}"`;
+      // ✅ FIXED: Use iriToTurtle for proper IRI formatting
+      const violatedFieldTurtle = iriToTurtle(entry.fieldIRI);
+      
+      ttl += `ex:${violationId} report:hasFieldViolation ex:${fieldViolationId} .
+ex:${fieldViolationId} a report:FieldViolation ;
+    report:violatedField ${violatedFieldTurtle} ;
+    report:violatedPolicy ${cleanPolicyAlias} ;
+    report:violationType "${entry.type}" ;
+    report:violationReason "${sanitizeTurtleLiteral(entry.reason)}"`;
       
       if (entry.type === 'count') {
         ttl += ` ;
-    <https://w3id.org/force/compliance-report#observedCount> "${entry.observedCount}"^^xsd:integer ;
-    <https://w3id.org/force/compliance-report#allowedLimit> "${entry.limit}"^^xsd:integer ;
-    <https://w3id.org/force/compliance-report#actionType> "${cleanIRI(entry.actionType)}"`;
+    report:observedCount "${entry.observedCount}"^^xsd:integer ;
+    report:allowedLimit "${entry.limit}"^^xsd:integer ;
+    report:actionType "${cleanIRI(entry.actionType)}"`;
       } else if (entry.type === 'recipient') {
+        // ✅ FIXED: Removed stray quote at the end
         ttl += ` ;
-    <https://w3id.org/force/compliance-report#requesterWebID> <${cleanIRI(entry.requesterWebId)}> ;
-    <https://w3id.org/force/compliance-report#allowedAssignee> <${cleanIRI(entry.allowedAssignee)}>"`;
+    report:requesterWebID <${cleanIRI(entry.requesterWebId)}> ;
+    report:allowedAssignee <${cleanIRI(entry.allowedAssignee)}>`;
       } else if (entry.type === 'temporal') {
         ttl += ` ;
-    <https://w3id.org/force/compliance-report#currentTime> "${entry.currentTime}"^^xsd:dateTime ;
-    <https://w3id.org/force/compliance-report#policyDate> "${entry.policyDate}"^^xsd:dateTime"`;
+    report:currentTime "${entry.currentTime}"^^xsd:dateTime ;
+    report:policyDate "${entry.policyDate}"^^xsd:dateTime`;
       }
       
       ttl += ` .
@@ -1355,7 +1422,7 @@ ex:${fieldViolationId} a <https://w3id.org/force/compliance-report#FieldViolatio
   
   await fs.appendFile(logFile, ttl);
   
-  const status = decision.permitted ? "ACCESS ALLOWED" : "POLICY VIOLATION";
+  const status = decision.permitted ? "✅ ACCESS ALLOWED" : "⚠️ POLICY VIOLATION";
   const fields = sensitiveFields.length > 0 ? sensitiveFields.join(', ') : 'none';
   
   if (!decision.permitted && violationEntries.length > 0) {
